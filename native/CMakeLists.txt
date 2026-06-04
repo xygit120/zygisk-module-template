@@ -1,36 +1,48 @@
-cmake_minimum_required(VERSION 3.22.1)
+cmake_minimum_required(VERSION 3.28)   # 必须 >= 3.28 才能较好支持 Modules
 project(BootloaderSpoofer LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_SCAN_FOR_MODULES ON)     # 关键：启用模块扫描
 
-if(NOT ANDROID_ABI)
-    set(ANDROID_ABI arm64-v8a)
-endif()
-
-# ==================== Dobby ====================
+# ==================== Dobby 静态库（保留之前修复） ====================
 set(DOBBY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/dobby)
 
 if(EXISTS ${DOBBY_DIR}/CMakeLists.txt)
+    # 强制 Dobby 编译为静态库
+    set(DOBBY_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+
     add_subdirectory(${DOBBY_DIR} dobby)
     set(HAS_DOBBY TRUE)
-    message(STATUS "Dobby enabled")
+    message(STATUS "Dobby enabled (static)")
 else()
     message(FATAL_ERROR "Dobby not found!")
 endif()
 
-# ==================== LSPlant ====================
+# ==================== LSPlant（方案二：启用 Modules） ====================
 set(LSPLANT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/lsplant)
 set(LSPLANT_SRC ${LSPLANT_DIR}/lsplant/src/main/jni/lsplant.cc)
 
 if(EXISTS ${LSPLANT_SRC})
     add_library(lsplant STATIC ${LSPLANT_SRC})
+
     target_include_directories(lsplant PUBLIC
         ${LSPLANT_DIR}/lsplant/src/main/jni
         ${LSPLANT_DIR}/lsplant/src/main/jni/include
     )
+
+    # 给 lsplant 开启 Modules 支持
+    target_compile_options(lsplant PRIVATE
+        -fmodules
+        -fcxx-modules
+    )
+
+    # 确保使用 C++20
+    target_compile_features(lsplant PRIVATE cxx_std_20)
+
     set(HAS_LSPLANT TRUE)
-    message(STATUS "LSPlant enabled")
+    message(STATUS "LSPlant enabled (with C++ Modules)")
 else()
     message(FATAL_ERROR "LSPlant not found!")
 endif()
@@ -40,14 +52,14 @@ add_library(bootloader_spoofer SHARED main.cpp)
 
 target_include_directories(bootloader_spoofer PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${DOBBY_DIR}/include          # 显式加上 Dobby 头文件路径
+    ${DOBBY_DIR}/include
 )
 
 target_link_libraries(bootloader_spoofer PRIVATE
     log
     android
     lsplant
-    dobby_static
+    dobby          # ← 已改为 dobby（之前你写 dobby_static 可能不对）
 )
 
 if(HAS_DOBBY)
@@ -55,5 +67,5 @@ if(HAS_DOBBY)
 endif()
 
 set_target_properties(bootloader_spoofer PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/zygisk/${ANDROID_ABI}"
+    LIBRARY_OUTPUT_DIRECTORY "\( {CMAKE_CURRENT_BINARY_DIR}/zygisk/ \){ANDROID_ABI}"
 )
