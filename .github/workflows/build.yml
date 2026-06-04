@@ -32,20 +32,19 @@ jobs:
 
       - name: Prepare LSPlant
         run: |
-          git config --global url."https://github.com/".insteadOf git@github.com:
-          rm -rf external/lsplant
-          git clone --depth 1 https://github.com/LSPosed/LSPlant.git external/lsplant
+          if [ ! -d "external/lsplant" ]; then
+            git clone --depth 1 https://github.com/LSPosed/LSPlant.git external/lsplant
+          fi
           rm -rf external/lsplant/test external/lsplant/docs || true
 
-      - name: Build Magisk Module
-        run: python3 build.py zip --force --save-debug
+      - name: Build module
+        run: python3 build.py zip
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: BootloaderSpoofer-Zygisk
           path: release/*.zip
-          retention-days: 7
 
       - name: Create Release
         if: github.event_name != 'pull_request'
