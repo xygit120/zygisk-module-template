@@ -2,6 +2,7 @@
 SKIPUNZIP=1
 
 DEBUG=True
+# 严格对齐 build.py 中的 MODULE_ID
 SONAME=zygisk-test
 SUPPORTED_ABIS="arm64"
 
@@ -26,7 +27,7 @@ fi
 VERSION=$(grep_prop version "${TMPDIR}/module.prop")
 ui_print "- Installing $SONAME $VERSION"
 
-# check architecture
+# 检查设备架构是否支持 arm64
 support=false
 for abi in $SUPPORTED_ABIS
 do
@@ -34,8 +35,9 @@ do
     support=true
   fi
 done
+
 if [ "$support" == "false" ]; then
-  abort "! Unsupported platform: $ARCH"
+  abort "! Unsupported platform: $ARCH (This module only supports arm64)"
 else
   ui_print "- Device platform: $ARCH"
 fi
@@ -49,6 +51,7 @@ if [ ! -f "$TMPDIR/verify.sh" ]; then
   abort    "*********************************************************"
 fi
 . "$TMPDIR/verify.sh"
+
 extract "$ZIPFILE" 'customize.sh'  "$TMPDIR/.vunzip"
 extract "$ZIPFILE" 'verify.sh'     "$TMPDIR/.vunzip"
 extract "$ZIPFILE" 'sepolicy.rule' "$TMPDIR"
@@ -57,24 +60,36 @@ ui_print "- Extracting module files"
 extract "$ZIPFILE" 'module.prop'     "$MODPATH"
 extract "$ZIPFILE" 'post-fs-data.sh' "$MODPATH"
 extract "$ZIPFILE" 'service.sh'      "$MODPATH"
-mv "$TMPDIR/sepolicy.rule" "$MODPATH"
 
-# 创建 zygisk 存放目录
-mkdir -p "$MODPATH/zygisk"
-
-# 【核心修改】：彻底干掉 32 位解压，且根据你在 CMake 中 add_library 出来的库名字
-# 将打包进 lib/arm64-v8a/ 下的库正确释放并重命名为 Zygisk 规范的 arm64.so 
-if [ "$ARCH" = "x86" ] || [ "$ARCH" = "x64" ]; then
-  ui_print "- Extracting x64 libraries"
-  extract "$ZIPFILE" "lib/x86_64/libzygisk_bootloader.so" "$MODPATH/zygisk" true
-  mv "$MODPATH/zygisk/libzygisk_bootloader.so" "$MODPATH/zygisk/x86_64.so"
-else
-  ui_print "- Extracting arm64 libraries"
-  # 注意：你的 CMake 编译出来的 so 名字叫 libzygisk_bootloader.so
-  extract "$ZIPFILE" "lib/arm64-v8a/libzygisk_bootloader.so" "$MODPATH/zygisk" true
-  # Zygisk 规范要求 64 位注入库最终必须命名为 arm64.so
-  mv "$MODPATH/zygisk/libzygisk_bootloader.so" "$MODPATH/zygisk/arm64.so"
+if [ -f "$TMPDIR/sepolicy.rule" ]; then
+  mv "$TMPDIR/sepolicy.rule" "$MODPATH"
 fi
 
-ui_print "- Setting permissions"
-set_perm_recursive "$MODPATH" 0 0 0755 0644
+# ==================== 核心修复：清理并对齐 Zygisk 库释放 ====================
+ui_print "- Preparing Zygisk storage environment"
+mkdir -p "$MODPATH/zygisk"
+
+# 精准解压 CMake 编译出来的 libzygisk_bootloader.so，并将其标准化重命名为 arm64.so
+if [ "$ARCH" = "arm64" ]; then
+  ui_print "- Extracting 64-bit native binaries"
+  extract "$ZIPFILE" "lib/arm64-v8a/libzygisk_bootloader.so" "$MODPATH/zygisk" true
+  if [ -f "$MODPATH/zygisk/libzygisk_bootloader.so" ]; then
+    mv "$MODPATH/zygisk/libzygisk_bootloader.so" "$MODPATH/zygisk/arm64.so"
+    ui_print "- Successfully configured arm64.so"
+  else
+    abort "! Failed to extract compiled library file"
+  fi
+fi
+
+# ==================== 核心修复：释放本地黑白名单配置文件 ====================
+ui_print "- Extracting custom package whitelist (target.txt)"
+extract "$ZIPFILE" 'target.txt' "$MODPATH"
+
+# 再次确保创建正确的模块独立目录，防止运行期配置丢失
+mkdir -p "/data/adb/modules/$SONAME/"
+if [ -f "$MODPATH/target.txt" ]; then
+  cp "$MODPATH/target.txt" "/data/adb/modules/$SONAME/target.txt"
+  chmod 0644 "/data/adb/modules/$SONAME/target.txt"
+fi
+
+ui_print "- Installation template configurations completed successfully."

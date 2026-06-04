@@ -6,40 +6,14 @@
 #include <vector>
 #include <dlfcn.h>
 #include "zygisk.hpp"
-#include "shadowhook.h"
 
 #define LOG_TAG "BootloaderSpoofer"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
 using zygisk::Api;
 using zygisk::AppSpecializeArgs;
-using zygisk::ServerSpecializeArgs;
 
-// ---------- 安全捕获 JNI 环境 ----------
-static JNIEnv* getSafeJNIEnv() {
-    typedef jint (*JNI_GetCreatedJavaVMs_t)(JavaVM**, jsize, jsize*);
-    void* handle = dlopen("libnativehelper.so", RTLD_LAZY);
-    if (!handle) handle = RTLD_DEFAULT;
-    auto* pfnGetVMs = (JNI_GetCreatedJavaVMs_t)dlsym(handle, "JNI_GetCreatedJavaVMs");
-    if (!pfnGetVMs) {
-        if (handle != RTLD_DEFAULT) dlclose(handle);
-        return nullptr;
-    }
-    JavaVM* vm = nullptr;
-    jsize vm_count = 0;
-    if (pfnGetVMs(&vm, 1, &vm_count) != JNI_OK || vm_count == 0) {
-        if (handle != RTLD_DEFAULT) dlclose(handle);
-        return nullptr;
-    }
-    if (handle != RTLD_DEFAULT) dlclose(handle);
-    JNIEnv* env = nullptr;
-    if (vm->GetEnv((void**)&env, JNI_VERSION_1_6) == JNI_EDETACHED) {
-        vm->AttachCurrentThread(&env, nullptr);
-    }
-    return env;
-}
-
-// ---------- 目标过滤控制 ----------
+// ---------- 全局白名单配置 ----------
 static std::vector<std::string> targetList;
 static bool isTargetApp(const char* pkg) {
     if (!pkg) return false;
@@ -47,7 +21,8 @@ static bool isTargetApp(const char* pkg) {
     if (p == "com.android.se" || p == "com.google.android.gms" || p == "io.github.vvb2060.keyattestation") return true;
 
     if (targetList.empty()) {
-        std::ifstream file("/data/adb/modules/ru.blays.bootloaderspoofer.shadowcpp/target.txt");
+        // 【核心对齐】：这里路径必须修改为 /data/adb/modules/zygisk-test/target.txt 才能和你的 build.py 对应上
+        std::ifstream file("/data/adb/modules/zygisk-test/target.txt");
         if (file.is_open()) {
             std::string line;
             while (std::getline(file, line)) {
@@ -56,7 +31,7 @@ static bool isTargetApp(const char* pkg) {
             }
             file.close();
         } else {
-            return true; // 默认全局拦截
+            return true; 
         }
     }
     for (const auto& t : targetList) {
@@ -65,103 +40,97 @@ static bool isTargetApp(const char* pkg) {
     return false;
 }
 
-// ---------- 核心爆破：直接对 byte[] 内存段执行暴力强改 ----------
-static bool patchRawBuffer(uint8_t* data, size_t len) {
-    bool patched = false;
-    if (len < 6) return false;
-
-    for (size_t i = 0; i < len - 5; ++i) {
-        // 100% 对齐 Kotlin 特征扫描：找 deviceLocked (0x01 0x01 XX) 紧邻 verifiedBootState (0x0A 0x01 XX)
+// ---------- 核心算法：100% 对齐原版 Kotlin 字节修改逻辑 ----------
+static void patchRawExtensionBytes(jbyte* data, jsize len) {
+    if (len < 6) return;
+    for (jsize i = 0; i < len - 5; ++i) {
+        // 匹配特征：deviceLocked(0x01 0x01 XX) 紧邻 verifiedBootState(0x0A 0x01 XX)
         if (data[i] == 0x01 && data[i+1] == 0x01 && data[i+3] == 0x0A && data[i+4] == 0x01) {
-            LOGI("🎯 [Native] 捕获到 RootOfTrust 内存特征流，偏移位置: %zu", i);
-            LOGI("🔍 [Native] 篡改前 -> deviceLocked: %02X, verifiedBootState: %02X", data[i+2], data[i+5]);
-
+            LOGI("🎯 [JavaHook] 成功在扩展段字节流中定位到 RootOfTrust 结构！位置: %d", i);
+            
             // 1. deviceLocked -> true (0x01)
             if (data[i+2] == 0x00) {
                 data[i+2] = 0x01;
-                patched = true;
+                LOGI("🔒 forced deviceLocked -> true");
             }
             // 2. verifiedBootState -> VERIFIED (0x00)
             if (data[i+5] != 0x00) {
                 data[i+5] = 0x00;
-                patched = true;
+                LOGI("🛡️ forced verifiedBootState -> VERIFIED");
             }
-
-            if (patched) {
-                LOGI("🎉 [Native] 篡改成功！已强刷为 🔒Locked(01) + 🛡️VERIFIED(00)");
-                break;
-            }
+            break;
         }
     }
-    return patched;
 }
 
-// ---------- 拦截层 1：挂钩原始 X509_get_ext_d2i ----------
-struct ASN1_OCTET_STRING {
-    int length;
-    int type;
-    unsigned char *data;
-    long flags;
-};
-typedef ASN1_OCTET_STRING* (*X509_get_ext_d2i_t)(void*, int, int*, int*);
-static X509_get_ext_d2i_t orig_X509_get_ext_d2i = nullptr;
+// ---------- JNI 篡改代理：接管 X509Certificate.getExtensionValue ----------
+static jobject g_orig_getExtensionValue_method = nullptr;
 
-static ASN1_OCTET_STRING* hooked_X509_get_ext_d2i(void* x, int nid, int* crit, int* idx) {
-    ASN1_OCTET_STRING* res = orig_X509_get_ext_d2i(x, nid, crit, idx);
-    if (res != nullptr && res->data != nullptr && res->length > 0) {
-        patchRawBuffer(res->data, res->length);
-    }
-    return res;
-}
-
-// ---------- 拦截层 2：兜底大网，直接挂钩 BoringSSL 的底层 ASN1_item_d2i ----------
-// 无论 Java 层通过什么偏门函数解析任何证书段，最终在 C++ 层反序列化生成 ASN.1 结构时，必过此路
-typedef void* (*ASN1_item_d2i_t)(void**, const unsigned char**, long, const void*);
-static ASN1_item_d2i_t orig_ASN1_item_d2i = nullptr;
-
-static void* hooked_ASN1_item_d2i(void** val, const unsigned char** in, long len, const void* it) {
-    // 因为 in 指针在解析时会被修改，我们先拷贝它的初始地址
-    const unsigned char* p_in = *in;
-    void* res = orig_ASN1_item_d2i(val, in, len, it);
+extern "C" JNIEXPORT jbyteArray JNICALL Native_getExtensionValue_Proxy(JNIEnv* env, jobject thiz, jstring oid) {
+    jclass method_cls = env->FindClass("java/lang/reflect/Method");
+    jmethodID invoke_id = env->GetMethodID(method_cls, "invoke", "(java/lang/Object;[java/lang/Object;)java/lang/Object;");
     
-    // 如果解析成功，直接在刚刚读过的原始输入缓冲区里就地扫描并强改
-    if (res != nullptr && p_in != nullptr && len > 0) {
-        // 由于这里拦截的是全系统所有的 ASN.1 解析，我们需要无条件快速扫描特征码
-        patchRawBuffer(const_cast<uint8_t*>(p_in), static_cast<size_t>(len));
-    }
-    return res;
-}
-
-// ---------- 执行多点防御挂钩 ----------
-static void doNativeHook() {
-    static bool hooked = false;
-    if (hooked) return;
-
-    if (shadowhook_init(SHADOWHOOK_MODE_UNIQUE, false) != 0) return;
-
-    // 1. 尝试挂钩顶层封装
-    shadowhook_hook_sym_name("libcrypto.so", "X509_get_ext_d2i", (void*)hooked_X509_get_ext_d2i, (void**)&orig_X509_get_ext_d2i);
+    jobjectArray args = env->NewObjectArray(1, env->FindClass("java/lang/Object"), oid);
+    jbyteArray raw_res = (jbyteArray)env->CallObjectMethod(g_orig_getExtensionValue_method, invoke_id, thiz, args);
     
-    // 2. 强行挂钩必经之路（兜底大网）
-    void* stub = shadowhook_hook_sym_name("libcrypto.so", "ASN1_item_d2i", (void*)hooked_ASN1_item_d2i, (void**)&orig_ASN1_item_d2i);
-    if (!stub) {
-        stub = shadowhook_hook_sym_name("/apex/com.android.runtime/lib64/bionic/libcrypto.so", "ASN1_item_d2i", (void*)hooked_ASN1_item_d2i, (void**)&orig_ASN1_item_d2i);
+    if (raw_res == nullptr) return nullptr;
+
+    const char* oid_str = env->GetStringUTFChars(oid, nullptr);
+    bool is_target_oid = (oid_str && strcmp(oid_str, "1.3.6.1.4.1.11129.2.1.17") == 0);
+    env->ReleaseStringUTFChars(oid, oid_str);
+
+    if (is_target_oid) {
+        jsize len = env->GetArrayLength(raw_res);
+        jbyte* p_bytes = env->GetByteArrayElements(raw_res, nullptr);
+        if (p_bytes) {
+            patchRawExtensionBytes(p_bytes, len);
+            env->ReleaseByteArrayElements(raw_res, p_bytes, 0);
+        }
+    }
+    return raw_res;
+}
+
+// ---------- 核心注入点：利用 JNI 全局劫持 Java 核心类 ----------
+static void injectJavaLayerHook(JNIEnv* env) {
+    static bool java_hooked = false;
+    if (java_hooked) return;
+
+    LOGI("🚀 Zygisk 正在切入 Java 运行时环境进行全局劫持...");
+
+    jclass x509_cls = env->FindClass("java/security/cert/X509Certificate");
+    if (!x509_cls) {
+        LOGI("❌ 未能找到 X509Certificate 类");
+        return;
     }
 
-    if (stub != nullptr) {
-        LOGI("🚀 Native 全局 ASN1 通道双重拦截网络构建成功！");
-        hooked = true;
+    jmethodID target_method_id = env->GetMethodID(x509_cls, "getExtensionValue", "(java/lang/String;)[B");
+    if (target_method_id) {
+        jobject method_obj = env->ToReflectedMethod(x509_cls, target_method_id, JNI_FALSE);
+        g_orig_getExtensionValue_method = env->NewGlobalRef(method_obj);
+
+        // 【关键修复】：JNI 签名中类的全路径要用 / 分割，Ljava/lang/String;
+        JNINativeMethod g_methods[] = {
+            {"getExtensionValue", "(Ljava/lang/String;)[B", (void*)&Native_getExtensionValue_Proxy}
+        };
+        
+        if (env->RegisterNatives(x509_cls, g_methods, 1) == 0) {
+            LOGI("🎉 [JavaHook] 成功接管 X509Certificate.getExtensionValue()！");
+            java_hooked = true;
+        } else {
+            LOGI("❌ 动态注册代理失败");
+        }
     }
 }
 
-// ---------- Zygisk 核心入口 ----------
+// ---------- Zygisk 接口包装 ----------
 class BootloaderSpoofer : public zygisk::ModuleBase {
 public:
     void onLoad(Api *api, JNIEnv *env) override {}
 
     void preAppSpecialize(AppSpecializeArgs *args) override {
         if (!args || !args->nice_name) return;
-        JNIEnv* env = getSafeJNIEnv();
+        
+        JNIEnv* env = args->env; 
         if (!env) return;
 
         const char* process_name = env->GetStringUTFChars(args->nice_name, nullptr);
@@ -170,11 +139,9 @@ public:
         bool matched = isTargetApp(process_name);
         env->ReleaseStringUTFChars(args->nice_name, process_name);
 
-        if (matched) doNativeHook();
-    }
-
-    void preServerSpecialize(ServerSpecializeArgs *args) override {
-        doNativeHook();
+        if (matched) {
+            injectJavaLayerHook(env);
+        }
     }
 };
 
