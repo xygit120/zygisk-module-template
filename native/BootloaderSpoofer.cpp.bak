@@ -11,9 +11,7 @@
 #define LOG_TAG "BootloaderSpoofer"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
-using zygisk::Api;
-using zygisk::AppSpecializeArgs;
-using zygisk::ServerSpecializeArgs;
+using namespace zygisk;
 
 // ---------- 安全捕获 JNI 环境 ----------
 static JNIEnv* getSafeJNIEnv() {
@@ -76,24 +74,39 @@ static int findBytesIndex(const uint8_t* haystack, size_t haystack_len, const ui
 
 // ---------- 核心解析与篡改 (100% 对齐原 Xposed 逻辑) ----------
 static bool patchAttestation(uint8_t* data, size_t len) {
+    // 1. 验证 Key Attestation 顶层扩展 OID (1.3.6.1.4.1.11129.2.1.17)
+    // ASN.1 DER 编码格式: 0x06 (Object Identifier), 0x0B (长度 11)
     const uint8_t attestation_oid[] = {0x06, 0x0b, 0x2b, 0x06, 0x01, 0x04, 0x01, 0xd6, 0x79, 0x02, 0x01, 0x11};
     if (findBytesIndex(data, len, attestation_oid, sizeof(attestation_oid)) == -1) {
         return false; 
     }
+
+    // 2. 定位 RootOfTrust 结构体特征
+    // 根据原代码中 ASN1TaggedObject 标签 704 定位 (ASN.1 编码一般以形如 0xBF, 0x85, 0x40 或类似的高位复合标签开头)
+    // 我们直接寻找 rootOfTrust 内部特征：verifiedBootState 紧跟在 deviceLocked 后面。
+    // deviceLocked 为 ASN1Boolean: 0x01, 0x01, 0x00 (假) 或 0x01, 0x01, 0x01 (真)
+    // verifiedBootState 为 ASN1Enumerated: 0x0A, 0x01, 0x01 (解锁/自签名) 
     
     bool patched = false;
     for (size_t i = 0; i < len - 8; ++i) {
-        // 匹配特征：deviceLocked(BOOLEAN) 紧邻 verifiedBootState(ENUMERATED)
+        // 匹配未锁定的典型特征组合：
+        // data[i] -> 0x01 (BOOLEAN 标签)
+        // data[i+1] -> 0x01 (长度 1)
+        // data[i+2] -> 0x00 (false, 代表没锁)
+        // data[i+3] -> 0x0A (ENUMERATED 标签)
+        // data[i+4] -> 0x01 (长度 1)
+        // data[i+5] -> 0x01 或 0x02 或 0x03 (代表 UNVERIFIED / SELF_SIGNED)
         if (data[i] == 0x01 && data[i+1] == 0x01 && data[i+3] == 0x0A && data[i+4] == 0x01) {
             
-            // 1. deviceLocked -> true (0x01)
+            // 精准对齐原本 Xposed 逻辑中的两行赋值：
+            // 1. deviceLocked 设为 1 (true)
             if (data[i+2] == 0x00) {
                 data[i+2] = 0x01;
                 LOGI("🔒 [RootOfTrust] forced deviceLocked -> true");
                 patched = true;
             }
             
-            // 2. verifiedBootState -> VERIFIED (0x00)
+            // 2. verifiedBootState 设为 0 (VERIFIED)
             if (data[i+5] != 0x00) {
                 data[i+5] = 0x00;
                 LOGI("🛡️ [RootOfTrust] forced verifiedBootState -> VERIFIED");
@@ -142,7 +155,7 @@ static void doNativeHook() {
 }
 
 // ---------- Zygisk 接口包装 ----------
-class BootloaderSpoofer : public zygisk::ModuleBase {
+class BootloaderSpoofer : public ModuleBase {
 public:
     void onLoad(Api *api, JNIEnv *env) override {}
 
@@ -165,14 +178,10 @@ public:
     }
 };
 
-// 适配旧版本 zygisk.hpp 基类名称: CompanionHandler
-class BootloaderSpooferCompanion : public zygisk::CompanionHandler {
+class BootloaderSpooferCompanion : public CompanionBase {
 public:
-    void onConnection(int socket) override {
-        // 留空即可
-    }
+    void onConnection(int socket) override {}
 };
 
-// 完美的兼容双重注册
 REGISTER_ZYGISK_MODULE(BootloaderSpoofer)
 REGISTER_ZYGISK_COMPANION(BootloaderSpooferCompanion)
