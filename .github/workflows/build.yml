@@ -16,20 +16,44 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Install Ninja
+      # 确保系统安装了解压工具 unzip
+      - name: Install Ninja and Unzip
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build
+          sudo apt-get install -y ninja-build unzip
 
-      # 2. 精细化子模块掌控（CD 进入子目录，解除 Git 作用域限制）
-      - name: Initialize Template Submodules Safely
+      # 2. 配置依赖项：保留 Dobby 子模块 + 引用 LSPlant-6.4.zip
+      - name: Setup Dependencies (Dobby Submodule + LSPlant Zip)
         run: |
-          # 让主 Git 初始化顶层子模块
-          git submodule update --init native/external/dobby native/external/lsplant
+          # 2.1 沿用模板自带的 Dobby（继续走 Git，它没有死链报错）
+          git submodule update --init native/external/dobby
           
-          # CD 进 lsplant 目录，让它自己的 Git 递归拉取 dex_builder 和 parallel_hashmap，绕过测试死链
-          cd native/external/lsplant
-          git submodule update --init --recursive lsplant/src/main/jni/external/dex_builder
+          # 2.2 清理旧的 lsplant 目录，并重新创建
+          rm -rf native/external/lsplant
+          mkdir -p native/external/lsplant
+          
+          # 【💡 提示】
+          # 情况 A：如果你把 LSPlant-6.4.zip 直接放在项目的根目录下，它会随着前面的 Checkout 自动就位。
+          # 情况 B：如果是远程链接，请取消下方 curl 的注释，并把 URL 换成你的真实下载链接：
+          # curl -L -o LSPlant-6.4.zip "https://example.com/path/to/LSPlant-6.4.zip"
+          
+          if [ -f "LSPlant-6.4.zip" ]; then
+            echo "✓ 找到 LSPlant-6.4.zip，正在解压..."
+            unzip -q LSPlant-6.4.zip -d native/external/lsplant
+            
+            # 自动化解套：防止压缩包内含有单层同名顶层文件夹（例如内部包裹了 LSPlant-6.4/ 导致 CMake 找不到）
+            if [ -d "native/external/lsplant/LSPlant-6.4" ]; then
+              echo "⚠️ 检查到压缩包内有嵌套的 LSPlant-6.4 目录，正在提取拉平..."
+              mv native/external/lsplant/LSPlant-6.4/* native/external/lsplant/ 2>/dev/null || true
+              mv native/external/lsplant/LSPlant-6.4/.* native/external/lsplant/ 2>/dev/null || true
+              rm -rf native/external/lsplant/LSPlant-6.4
+            fi
+            echo "✓ LSPlant 源码结构就位"
+          else
+            echo "❌ Error: 未在根目录找到 LSPlant-6.4.zip 压缩包！"
+            echo "请确保你已将 zip 提交到了仓库根目录，或者在 Actions 中配置了 curl 下载它。"
+            exit 1
+          fi
 
       # 3. 使用最稳妥的 NDK r26d 编译
       - name: Setup Android NDK r26d
@@ -54,6 +78,7 @@ jobs:
 
           cmake --build build --config Release
 
+      # 4. 构建打包 Magisk 模块
       - name: Prepare Magisk Module
         run: |
           mkdir -p MagiskModule/zygisk/arm64-v8a
