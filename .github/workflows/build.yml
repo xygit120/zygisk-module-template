@@ -31,8 +31,11 @@ jobs:
           git submodule update --init --recursive --depth 1 lsplant/src/main/jni/external/dex_builder
       # ============================================================
 
-      - name: Install Ninja (for C++ Modules support)
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      # 关键修改 1：不仅安装 ninja，还要安装 clang-tools 以获取 host 的 clang-scan-deps
+      - name: Install Ninja & Clang Tools (for C++ Modules support)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang-tools
 
       - name: Setup Android NDK r26d
         uses: nttld/setup-ndk@v1
@@ -47,10 +50,11 @@ jobs:
           rm -rf build
           mkdir -p build
           
+          # 关键修改 2：将 CMAKE_CXX_COMPILER_CLANG_SCAN_DEPS 指向系统刚安装好的路径
           cmake -B build \
             -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
-            -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang-scan-deps \
+            -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS=/usr/bin/clang-scan-deps \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-26 \
             -DCMAKE_BUILD_TYPE=Release
