@@ -8,21 +8,15 @@ if(NOT ANDROID_ABI)
     set(ANDROID_ABI arm64-v8a)
 endif()
 
-# ==================== Dobby（强制使用静态库） ====================
+# ==================== Dobby ====================
 set(DOBBY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/dobby)
 
 if(EXISTS ${DOBBY_DIR}/CMakeLists.txt)
-    # Dobby 的 CMake 会同时生成 dobby (shared) 和 dobby_static (static)
-    # 我们只链接静态库即可，下面这些 set 只是为了保险
-    set(DOBBY_BUILD_SHARED OFF CACHE BOOL "" FORCE)
-    set(DOBBY_BUILD_STATIC ON CACHE BOOL "" FORCE)
-    set(DOBBY_BUILD_TEST OFF CACHE BOOL "" FORCE)
-
     add_subdirectory(${DOBBY_DIR} dobby)
     set(HAS_DOBBY TRUE)
-    message(STATUS "Dobby enabled (static)")
+    message(STATUS "Dobby enabled")
 else()
-    message(FATAL_ERROR "Dobby not found! 请执行: git clone https://github.com/LSPosed/Dobby.git native/external/dobby")
+    message(FATAL_ERROR "Dobby not found!")
 endif()
 
 # ==================== LSPlant ====================
@@ -38,30 +32,28 @@ if(EXISTS ${LSPLANT_SRC})
     set(HAS_LSPLANT TRUE)
     message(STATUS "LSPlant enabled")
 else()
-    message(FATAL_ERROR "LSPlant not found! 请执行: git clone https://github.com/LSPosed/LSPlant.git native/external/lsplant")
+    message(FATAL_ERROR "LSPlant not found!")
 endif()
 
 # ==================== 主模块 ====================
-add_library(bootloader_spoofer SHARED
-    main.cpp
-)
+add_library(bootloader_spoofer SHARED main.cpp)
 
 target_include_directories(bootloader_spoofer PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${DOBBY_DIR}/include          # 显式加上 Dobby 头文件路径
 )
 
-target_link_libraries(bootloader_spoofer
+target_link_libraries(bootloader_spoofer PRIVATE
     log
     android
     lsplant
-    dobby_static          # ← 必须用静态库！
+    dobby_static
 )
 
 if(HAS_DOBBY)
     target_compile_definitions(bootloader_spoofer PRIVATE HAS_DOBBY=1)
 endif()
 
-# 正确设置输出目录（推荐使用这个版本，和 workflow 配合最好）
 set_target_properties(bootloader_spoofer PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/zygisk/${ANDROID_ABI}"
 )
