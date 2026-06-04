@@ -15,7 +15,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ==================== 自动克隆依赖（精准按需拉取） ====================
+      # ==================== 自动克隆依赖（处理套娃子模块） ====================
       - name: Clone Dobby
         working-directory: native
         run: |
@@ -26,12 +26,12 @@ jobs:
         working-directory: native
         run: |
           rm -rf external/lsplant
-          # 1. 先只克隆 LSPlant 主仓库（不包含任何子模块）
+          # 1. 克隆 LSPlant 主仓库
           git clone https://github.com/LSPosed/LSPlant.git external/lsplant --depth 1
           
-          # 2. 进入目录，仅单独初始化核心编译器依赖 dex_builder，跳过报错的 test 测试库
+          # 2. 进入目录，加上 --recursive 强制递归初始化 dex_builder 内部的所有嵌套子模块（如 parallel_hashmap）
           cd external/lsplant
-          git submodule update --init --depth 1 lsplant/src/main/jni/external/dex_builder
+          git submodule update --init --recursive --depth 1 lsplant/src/main/jni/external/dex_builder
       # ============================================================
 
       - name: Install Ninja (for C++ Modules support)
