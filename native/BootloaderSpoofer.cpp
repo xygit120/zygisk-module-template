@@ -27,11 +27,9 @@ static bool isTargetApp(const char* pkg) {
             }
             file.close();
         } else {
-            LOGI("target.txt not found, hooking ALL apps");
-            return true;
+            return true; // 文件不存在时 hook 所有
         }
     }
-
     std::string p(pkg);
     for (const auto& t : targetList) {
         if (p == t) return true;
@@ -100,7 +98,7 @@ public:
         LOGI("App: %s", pkg.c_str());
 
         if (isTargetApp(pkg.c_str())) {
-            LOGI("Target App Detected: %s", pkg.c_str());
+            LOGI("【Target】%s", pkg.c_str());
 
             shadowhook_init(SHADOWHOOK_MODE_UNIQUE, false);
 
