@@ -8,24 +8,30 @@ if(NOT ANDROID_ABI)
     set(ANDROID_ABI arm64-v8a)
 endif()
 
-# ==================== Dobby 集成 ====================
+# ==================== Dobby ====================
 set(DOBBY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/dobby)
-
 if(EXISTS ${DOBBY_DIR}/CMakeLists.txt)
-    message(STATUS "Dobby found at ${DOBBY_DIR}")
-
-    # Dobby 构建选项
     set(DOBBY_BUILD_SHARED OFF CACHE BOOL "" FORCE)
     set(DOBBY_BUILD_STATIC ON CACHE BOOL "" FORCE)
     set(DOBBY_BUILD_TEST OFF CACHE BOOL "" FORCE)
     set(DOBBY_BUILD_KERNEL ON CACHE BOOL "" FORCE)
-
     add_subdirectory(${DOBBY_DIR} dobby)
-
     set(HAS_DOBBY TRUE)
+endif()
+
+# ==================== LSPlant ====================
+set(LSPLANT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/lsplant)
+if(EXISTS ${LSPLANT_DIR}/lsplant/src/main/jni/lsplant.cc)
+    add_library(lsplant STATIC
+        ${LSPLANT_DIR}/lsplant/src/main/jni/lsplant.cc
+    )
+    target_include_directories(lsplant PUBLIC
+        ${LSPLANT_DIR}/lsplant/src/main/jni
+        ${LSPLANT_DIR}/lsplant/src/main/jni/include
+    )
+    set(HAS_LSPLANT TRUE)
 else()
-    message(WARNING "Dobby not found! Please run: git clone https://github.com/LSPosed/Dobby.git native/external/dobby")
-    set(HAS_DOBBY FALSE)
+    message(FATAL_ERROR "LSPlant not found! Please run: git clone https://github.com/LSPosed/LSPlant.git native/external/lsplant")
 endif()
 # ===================================================
 
@@ -40,14 +46,14 @@ target_include_directories(bootloader_spoofer PRIVATE
 target_link_libraries(bootloader_spoofer
     log
     android
+    lsplant
 )
 
 if(HAS_DOBBY)
     target_link_libraries(bootloader_spoofer dobby)
     target_compile_definitions(bootloader_spoofer PRIVATE HAS_DOBBY=1)
-    message(STATUS "Dobby enabled for LSPlant inline hooking")
 endif()
 
 set_target_properties(bootloader_spoofer PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../zygisk/${ANDROID_ABI}
+    LIBRARY_OUTPUT_DIRECTORY \( {CMAKE_CURRENT_SOURCE_DIR}/../zygisk/ \){ANDROID_ABI}
 )
