@@ -12,47 +12,35 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. 正常拉取主仓库代码
+      # 1. 正常拉取主仓库代码（拉下你当前提交的 LSPlant-6.4 文件夹）
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 确保系统安装了解压工具 unzip
-      - name: Install Ninja and Unzip
+       Tar
+      - name: Install Ninja
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build unzip
+          sudo apt-get install -y ninja-build
 
-      # 2. 配置依赖项：保留 Dobby 子模块 + 引用 LSPlant-6.4.zip
-      - name: Setup Dependencies (Dobby Submodule + LSPlant Zip)
+      # 2. 根据你的本地目录结构进行精密适配与补齐
+      - name: Sync and Fix Local LSPlant Structure
         run: |
-          # 2.1 沿用模板自带的 Dobby（继续走 Git，它没有死链报错）
-          git submodule update --init native/external/dobby
+          # 2.1 初始化 Dobby 子模块（如果它是以子模块形式存在的话）
+          git submodule update --init native/external/dobby || true
           
-          # 2.2 清理旧的 lsplant 目录，并重新创建
-          rm -rf native/external/lsplant
-          mkdir -p native/external/lsplant
+          # 2.2 核心修正：将 LSPlant-6.4 重命名为 CMake 预期的小写 lsplant
+          if [ -d "native/external/LSPlant-6.4" ]; then
+            echo "✓ 发现 native/external/LSPlant-6.4，正在纠正目录名..."
+            mv native/external/LSPlant-6.4 native/external/lsplant
+          fi
           
-          # 【💡 提示】
-          # 情况 A：如果你把 LSPlant-6.4.zip 直接放在项目的根目录下，它会随着前面的 Checkout 自动就位。
-          # 情况 B：如果是远程链接，请取消下方 curl 的注释，并把 URL 换成你的真实下载链接：
-          # curl -L -o LSPlant-6.4.zip "https://example.com/path/to/LSPlant-6.4.zip"
-          
-          if [ -f "LSPlant-6.4.zip" ]; then
-            echo "✓ 找到 LSPlant-6.4.zip，正在解压..."
-            unzip -q LSPlant-6.4.zip -d native/external/lsplant
-            
-            # 自动化解套：防止压缩包内含有单层同名顶层文件夹（例如内部包裹了 LSPlant-6.4/ 导致 CMake 找不到）
-            if [ -d "native/external/lsplant/LSPlant-6.4" ]; then
-              echo "⚠️ 检查到压缩包内有嵌套的 LSPlant-6.4 目录，正在提取拉平..."
-              mv native/external/lsplant/LSPlant-6.4/* native/external/lsplant/ 2>/dev/null || true
-              mv native/external/lsplant/LSPlant-6.4/.* native/external/lsplant/ 2>/dev/null || true
-              rm -rf native/external/lsplant/LSPlant-6.4
-            fi
-            echo "✓ LSPlant 源码结构就位"
-          else
-            echo "❌ Error: 未在根目录找到 LSPlant-6.4.zip 压缩包！"
-            echo "请确保你已将 zip 提交到了仓库根目录，或者在 Actions 中配置了 curl 下载它。"
-            exit 1
+          # 2.3 核心补齐：官方 Zip 包里缺失了 dex_builder，我们在此处精准克隆补齐
+          DEX_BUILDER_DIR="native/external/lsplant/lsplant/src/main/jni/external/dex_builder"
+          if [ ! -f "$DEX_BUILDER_DIR/CMakeLists.txt" ]; then
+            echo "⚠️ 检测到 dex_builder 核心依赖缺失（Zip 源码包通病），正在手动递归补齐..."
+            rm -rf "$DEX_BUILDER_DIR"
+            git clone --recursive https://github.com/LSPosed/DexBuilder.git "$DEX_BUILDER_DIR"
+            echo "✓ dex_builder 及其套娃依赖 parallel_hashmap 补齐成功！"
           fi
 
       # 3. 使用最稳妥的 NDK r26d 编译
@@ -78,7 +66,7 @@ jobs:
 
           cmake --build build --config Release
 
-      # 4. 构建打包 Magisk 模块
+      # 4. 打包 Magisk 模块
       - name: Prepare Magisk Module
         run: |
           mkdir -p MagiskModule/zygisk/arm64-v8a
