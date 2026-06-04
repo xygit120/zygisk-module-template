@@ -1,103 +1,29 @@
-name: Build Magisk Module
-
-on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-  workflow_dispatch:
-
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      # 1. 拉取代码（此时应包含你刚刚手动补齐的 dex_builder 源码）
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Install Ninja
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build
-
-      # 2. 根据你的本地目录结构进行精密适配（不再联网克隆）
-      - name: Sync and Fix Local LSPlant Structure
-        run: |
-          # 2.1 初始化 Dobby 子模块（如果它是以子模块形式存在的话）
-          git submodule update --init native/external/dobby || true
-          
-          # 2.2 核心修正：将 LSPlant-6.4 重命名为 CMake 预期的小写 lsplant
-          if [ -d "native/external/LSPlant-6.4" ]; then
-            echo "✓ 发现 native/external/LSPlant-6.4，正在纠正目录名..."
-            mv native/external/LSPlant-6.4 native/external/lsplant
-          fi
-          
-          # 2.3 验证 dex_builder 是否确实放对了地方
-          DEX_BUILDER_DIR="native/external/lsplant/lsplant/src/main/jni/external/dex_builder"
-          if [ -f "$DEX_BUILDER_DIR/CMakeLists.txt" ]; then
-            echo "✓ 完美！检测到本地手动补齐的 dex_builder 源码，直接参与编译。"
-          else
-            echo "❌ Error: 未能在预期位置找到 dex_builder 源码！"
-            echo "请检查你的本地路径是否为: native/external/LSPlant-6.4/lsplant/src/main/jni/external/dex_builder/"
-            exit 1
-          fi
-
-      # 3. 使用兼容性更好的 NDK r25c 编译
-      - name: Setup Android NDK r25c
-        uses: nttld/setup-ndk@v1
-        id: setup-ndk
-        with:
-          ndk-version: r25c
-          add-to-path: true
-
-      - name: Configure and Build with CMake (Ninja + NDK r25c)
-        working-directory: native
-        run: |
-          rm -rf build
-          mkdir -p build
-          
-          cmake -B build \
-            -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-26 \
-            -DCMAKE_BUILD_TYPE=Release
-
-          # 开启详细日志，万一报错可以看清原因
-          cmake --build build --config Release -- -v
-
-      # 4. 打包 Magisk 模块
-      - name: Prepare Magisk Module
-        run: |
-          mkdir -p MagiskModule/zygisk/arm64-v8a
-
-          SO_PATH="native/build/zygisk/arm64-v8a/libbootloader_spoofer.so"
-          if [ -f "$SO_PATH" ]; then
-            cp "$SO_PATH" MagiskModule/zygisk/arm64-v8a/arm64-v8a.so
-            echo "✓ .so 文件复制成功"
-          else
-            echo "❌ Error: 未找到 $SO_PATH"
-            echo "当前 build 目录内容："
-            find native/build -name "*.so" 2>/dev/null || echo "没有找到任何 .so 文件"
-            exit 1
-          fi
-
-          if [ -f "template/hooker.dex" ]; then
-            cp template/hooker.dex MagiskModule/hooker.dex
-          fi
-
-          if [ -f "module.prop" ]; then
-            cp module.prop MagiskModule/
-          else
-            echo "❌ Error: 根目录下缺少 module.prop 文件！"
-            exit 1
-          fi
-          
-          [ -f customize.sh ] && cp customize.sh MagiskModule/ || true
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: BootloaderSpoofer
-          path: MagiskModule/
+    - uses: actions/checkout@v3
+    
+    - name: Fix dex_builder CMakeLists.txt
+      run: |
+        cd native/external/lsplant/lsplant/src/main/jni/external/dex_builder
+        # 备份原文件
+        cp CMakeLists.txt CMakeLists.txt.backup
+        
+        # 使用sed修改
+        sed -i '1s/^/set(CMAKE_CXX_SCAN_FOR_MODULES OFF)\n/' CMakeLists.txt
+        sed -i '/project(dex_builder)/a set(CMAKE_CXX_STANDARD 17)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\nset(CMAKE_CXX_EXTENSIONS OFF)' CMakeLists.txt
+        # 删除原来的add_definitions行
+        sed -i '/add_definitions(-std=c++20)/d' CMakeLists.txt
+        
+    - name: Configure and Build
+      run: |
+        cd native
+        mkdir -p build && cd build
+        cmake .. \
+          -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
+          -DCMAKE_CXX_STANDARD=17 \
+          -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+          -DCMAKE_CXX_EXTENSIONS=OFF \
+          -DCMAKE_BUILD_TYPE=Release
+        cmake --build . --verbose
