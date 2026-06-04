@@ -1,7 +1,6 @@
-id=${moduleId}
-name=${moduleName}
-version=${versionName}
-versionCode=${versionCode}
-author=5ec1cff
-description=Module sample
-#updateJson=
+id=ru.blays.bootloaderspoofer.shadowcpp
+name=BootloaderSpoofer ShadowHook
+version=1.0
+versionCode=100
+author=ska
+description=Bootloader Spoofer (Zygisk + ShadowHook + target.txt 支持)
