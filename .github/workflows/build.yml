@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 必须加上这个！因为你的 build.py 依赖 git rev-list 计算版本号
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -25,4 +27,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: BootloaderSpoofer-Module
-          path: out/*.zip
+          # 【核心修复】：根据 build.py 的 release_dir 逻辑，路径应为 release/
+          path: release/*.zip
+          # 如果路径写错，让 Action 直接报错报错，方便排查
+          if-no-files-found: error
