@@ -30,12 +30,15 @@ jobs:
           ln -sfn ${{ steps.setup-ndk.outputs.ndk-path }} $HOME/android-sdk/ndk/r26d
           echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
 
-      - name: Prepare LSPlant
+      - name: Prepare LSPlant (Critical)
         run: |
-          if [ ! -d "external/lsplant" ]; then
+          mkdir -p external
+          if [ ! -d "external/lsplant/lsplant/src/main/jni/include" ]; then
+            echo "Cloning LSPlant..."
             git clone --depth 1 https://github.com/LSPosed/LSPlant.git external/lsplant
           fi
           rm -rf external/lsplant/test external/lsplant/docs || true
+          echo "LSPlant prepared"
 
       - name: Build module
         run: python3 build.py zip
@@ -45,6 +48,7 @@ jobs:
         with:
           name: BootloaderSpoofer-Zygisk
           path: release/*.zip
+          retention-days: 7
 
       - name: Create Release
         if: github.event_name != 'pull_request'
