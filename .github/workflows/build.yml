@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. 正常拉取主仓库代码（拉下你当前提交的 LSPlant-6.4 文件夹）
+      # 1. 正常拉取主仓库代码
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -24,33 +24,30 @@ jobs:
       # 2. 根据你的本地目录结构进行精密适配与补齐
       - name: Sync and Fix Local LSPlant Structure
         run: |
-          # 2.1 初始化 Dobby 子模块（如果它是以子模块形式存在的话）
           git submodule update --init native/external/dobby || true
           
-          # 2.2 核心修正：将 LSPlant-6.4 重命名为 CMake 预期的小写 lsplant
           if [ -d "native/external/LSPlant-6.4" ]; then
             echo "✓ 发现 native/external/LSPlant-6.4，正在纠正目录名..."
             mv native/external/LSPlant-6.4 native/external/lsplant
           fi
           
-          # 2.3 核心补齐：官方 Zip 包里缺失了 dex_builder，我们在此处精准克隆补齐
           DEX_BUILDER_DIR="native/external/lsplant/lsplant/src/main/jni/external/dex_builder"
           if [ ! -f "$DEX_BUILDER_DIR/CMakeLists.txt" ]; then
-            echo "⚠️ 检测到 dex_builder 核心依赖缺失（Zip 源码包通病），正在手动递归补齐..."
+            echo "⚠️ 检测到 dex_builder 核心依赖缺失，正在手动递归补齐..."
             rm -rf "$DEX_BUILDER_DIR"
             git clone --recursive https://github.com/LSPosed/DexBuilder.git "$DEX_BUILDER_DIR"
-            echo "✓ dex_builder 及其套娃依赖 parallel_hashmap 补齐成功！"
+            echo "✓ dex_builder 补齐成功！"
           fi
 
-      # 3. 使用最稳妥的 NDK r26d 编译
-      - name: Setup Android NDK r26d
+      # 3. 更换为对旧源码兼容性更好的 NDK r25c
+      - name: Setup Android NDK r25c
         uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
-          ndk-version: r26d
+          ndk-version: r25c
           add-to-path: true
 
-      - name: Configure and Build with CMake (Ninja + NDK r26d)
+      - name: Configure and Build with CMake (Ninja + NDK r25c)
         working-directory: native
         run: |
           rm -rf build
@@ -63,7 +60,8 @@ jobs:
             -DANDROID_PLATFORM=android-26 \
             -DCMAKE_BUILD_TYPE=Release
 
-          cmake --build build --config Release
+          # 使用 -- -v 参数，如果报错能看到具体是哪一行代码在报什么错
+          cmake --build build --config Release -- -v
 
       # 4. 打包 Magisk 模块
       - name: Prepare Magisk Module
