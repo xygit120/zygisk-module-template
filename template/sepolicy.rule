@@ -1,4 +1,0 @@
-allow zygote system_file file { read open getattr execute execute_no_trans }
-allow zygote system_file dir { read open getattr }
-allow appdomain system_file file { read open getattr execute }
-allow appdomain system_file dir { read open }

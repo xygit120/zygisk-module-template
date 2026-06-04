@@ -1,7 +1,9 @@
-name: Build Zygisk Module
+name: Build Magisk Module
 
 on:
   push:
+    branches: [ main, master ]
+  pull_request:
     branches: [ main, master ]
   workflow_dispatch:
 
@@ -10,24 +12,70 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # 必须加上这个！因为你的 build.py 依赖 git rev-list 计算版本号
+          submodules: recursive
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
         with:
-          python-version: '3.11'
+          ndk-version: r26d
+          add-to-path: true
 
-      - name: Build module
-        run: python3 build.py zip
+      - name: Install CMake and Ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
 
-      - name: Upload module zip
+      - name: Prepare LSPlant
+        run: |
+          # 如果你把 LSPlant 作为 submodule，这里会自动拉取
+          # 如果没有 submodule，请手动把 lsplant 源码放到 external/lsplant
+          if [ ! -d "external/lsplant" ]; then
+            echo "LSPlant not found as submodule. Please add it."
+            # 这里可以加 git clone 作为 fallback
+            git clone --depth 1 https://github.com/LSPosed/LSPlant.git external/lsplant || true
+          fi
+
+      - name: Build arm64-v8a
+        run: |
+          mkdir -p build
+          cd build
+          cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26 \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build . --config Release -j$(nproc)
+
+      - name: Prepare Magisk Module
+        run: |
+          mkdir -p MagiskModule/zygisk/arm64-v8a
+          cp build/zygisk/arm64-v8a/libbootloader_spoofer.so MagiskModule/zygisk/arm64-v8a/arm64-v8a.so
+          cp module.prop MagiskModule/
+          cp customize.sh MagiskModule/
+          # 如果有其他文件（如 META-INF）可以在这里添加
+
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: BootloaderSpoofer-Module
-          # 【核心修复】：根据 build.py 的 release_dir 逻辑，路径应为 release/
-          path: release/*.zip
-          # 如果路径写错，让 Action 直接报错报错，方便排查
-          if-no-files-found: error
+          name: BootloaderSpoofer-Zygisk
+          path: MagiskModule/
+
+      - name: Create Release Zip
+        if: github.event_name != 'pull_request'
+        run: |
+          cd MagiskModule
+          zip -r ../BootloaderSpoofer-Zygisk.zip . -x "*.git*"
+
+      - name: Upload Release Asset
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: BootloaderSpoofer-Zygisk.zip
+          tag_name: ${{ github.ref_name }}
+          name: BootloaderSpoofer Zygisk ${{ github.ref_name }}
+          draft: false
+          prerelease: false
