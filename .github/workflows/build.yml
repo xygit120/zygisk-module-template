@@ -15,7 +15,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ==================== 自动克隆依赖 ====================
+      # ==================== 自动克隆依赖（含 SSH 路由修复） ====================
       - name: Clone Dobby
         working-directory: native
         run: |
@@ -25,6 +25,9 @@ jobs:
       - name: Clone LSPlant
         working-directory: native
         run: |
+          # 核心修复：强制将 SSH 形式的子模块链接重定向为 HTTPS，解决权限拒绝问题
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          
           rm -rf external/lsplant
           git clone https://github.com/LSPosed/LSPlant.git external/lsplant --recurse-submodules --depth 1
       # ============================================================
