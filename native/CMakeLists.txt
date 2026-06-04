@@ -6,9 +6,10 @@ add_library(zygisk_bootloader SHARED
     BootloaderSpoofer.cpp
 )
 
-# === 使用预编译的 ShadowHook ===
+# ShadowHook 预编译库
 add_library(shadowhook SHARED IMPORTED)
 
+# 重要：使用完整相对路径
 set_target_properties(shadowhook PROPERTIES
     IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/libs/arm64-v8a/libshadowhook.so"
     INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/include"
