@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. 正常拉取主仓库代码（切记：不要在这里开 submodules: recursive）
+      # 1. 正常拉取主仓库代码（不开启全局递归 submodules）
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -21,21 +21,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build
 
-      # 2. 精确克隆稳定的依赖，并只拉取核心子模块，绕过测试目录里的死链
-      - name: Clone Stable LSPlant & Dobby (Bypass Broken Test Submodules)
-        working-directory: native
+      # 2. 完美的精细化子模块掌控
+      - name: Initialize Template Submodules Safely
         run: |
-          rm -rf external/dobby external/lsplant
+          # 仅初始化模板自带的顶层子模块，这会直接克隆项目作者指定的、完美兼容的 Dobby 和 LSPlant 版本
+          git submodule update --init native/external/dobby native/external/lsplant
           
-          # 克隆 Dobby
-          git clone https://github.com/LSPosed/Dobby.git external/dobby --depth 1
-          
-          # 克隆稳定版 v1.2.0 的 LSPlant (避开新版的 C++20 模块化深坑)
-          git clone --branch v1.2.0 https://github.com/LSPosed/LSPlant.git external/lsplant --depth 1
-          
-          # 【核心魔法】只初始化核心编译依赖 dex_builder，完全不理会 test 目录下的 lsprism 等死链
-          cd external/lsplant
-          git submodule update --init --depth 1 lsplant/src/main/jni/external/dex_builder
+          # 进入 LSPlant 目录，单独把编译核心所需的 dex_builder 拉下来，直接无视 test 里的 404 死链
+          cd native/external/lsplant
+          git submodule update --init lsplant/src/main/jni/external/dex_builder
 
       # 3. 使用最稳妥的 NDK r26d 编译
       - name: Setup Android NDK r26d

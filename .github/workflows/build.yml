@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. 正常拉取主仓库代码（不开启全局递归 submodules）
+      # 1. 正常拉取主仓库代码
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -21,15 +21,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build
 
-      # 2. 完美的精细化子模块掌控
+      # 2. 精细化子模块掌控（精准递归 dex_builder，无视 test 目录）
       - name: Initialize Template Submodules Safely
         run: |
-          # 仅初始化模板自带的顶层子模块，这会直接克隆项目作者指定的、完美兼容的 Dobby 和 LSPlant 版本
+          # 仅初始化模板自带的顶层子模块
           git submodule update --init native/external/dobby native/external/lsplant
           
-          # 进入 LSPlant 目录，单独把编译核心所需的 dex_builder 拉下来，直接无视 test 里的 404 死链
-          cd native/external/lsplant
-          git submodule update --init lsplant/src/main/jni/external/dex_builder
+          # 递归拉取 dex_builder 及其内部套娃（如 parallel_hashmap），完美避开 test 404 死链
+          git submodule update --init --recursive native/external/lsplant/lsplant/src/main/jni/external/dex_builder
 
       # 3. 使用最稳妥的 NDK r26d 编译
       - name: Setup Android NDK r26d
