@@ -1,22 +1,54 @@
-- name: Prepare Magisk Module
+name: Build Magisk Module
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Android NDK r26d
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26d
+          add-to-path: true
+
+      - name: Configure and Build with CMake
+        run: |
+          cd native
+          mkdir -p build
+          cmake -B build \
+            -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26 \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release -j$(nproc)
+
+      - name: Prepare Magisk Module
         run: |
           mkdir -p MagiskModule/zygisk/arm64-v8a
 
-          # ==================== 复制编译好的 .so ====================
-          # 从 CMake 的 build 目录复制（注意你的 CMake 输出路径）
+          # 复制 .so 文件
           SO_PATH="native/build/zygisk/arm64-v8a/libbootloader_spoofer.so"
-          
           if [ -f "$SO_PATH" ]; then
             cp "$SO_PATH" MagiskModule/zygisk/arm64-v8a/arm64-v8a.so
             echo "Copied .so from: $SO_PATH"
           else
-            echo "Error: .so file not found at $SO_PATH"
-            # 备用查找方式
+            echo "Error: .so not found at $SO_PATH"
             find native/build -name "*.so" | head -5
             exit 1
           fi
 
-          # ==================== 复制 hooker.dex ====================
+          # 复制 hooker.dex
           if [ -f "template/hooker.dex" ]; then
             cp template/hooker.dex MagiskModule/hooker.dex
             echo "Copied hooker.dex"
@@ -24,12 +56,32 @@
             echo "Warning: template/hooker.dex not found"
           fi
 
-          # ==================== 复制其他模块文件 ====================
+          # 复制其他模块文件
           cp module.prop MagiskModule/
           [ -f customize.sh ] && cp customize.sh MagiskModule/ || true
           [ -f post-fs-data.sh ] && cp post-fs-data.sh MagiskModule/ || true
           [ -f service.sh ] && cp service.sh MagiskModule/ || true
           [ -f sepolicy.rule ] && cp sepolicy.rule MagiskModule/ || true
 
-          echo "MagiskModule prepared successfully"
+          echo "=== MagiskModule prepared successfully ==="
           ls -la MagiskModule/
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BootloaderSpoofer-Zygisk
+          path: MagiskModule/
+
+      - name: Create Release Zip
+        if: github.event_name != 'pull_request'
+        run: |
+          cd MagiskModule
+          zip -r ../BootloaderSpoofer-Zygisk.zip ./*
+
+      - name: Upload Release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: BootloaderSpoofer-Zygisk.zip
+          tag_name: v${{ github.run_number }}
+          name: BootloaderSpoofer Build ${{ github.run_number }}
