@@ -4,9 +4,8 @@ project(BootloaderSpoofer LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# 既然已经全身心拥抱 Ninja，这里必须强制开启！
-# 这样 CMake 才会去扫描 LSPlant 和 dex_builder 内部的 C++20 模块依赖
-set(CMAKE_CXX_SCAN_FOR_MODULES ON)
+# 关键修改：关闭模块扫描（NDK Clang 目前不支持 CMake 的 C++ Modules 依赖扫描）
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 if(NOT ANDROID_ABI)
     set(ANDROID_ABI arm64-v8a)
@@ -55,5 +54,5 @@ if(HAS_DOBBY)
 endif()
 
 set_target_properties(bootloader_spoofer PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/zygisk/${ANDROID_ABI}"
+    LIBRARY_OUTPUT_DIRECTORY "\( {CMAKE_CURRENT_BINARY_DIR}/zygisk/ \){ANDROID_ABI}"
 )
