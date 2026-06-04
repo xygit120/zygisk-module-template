@@ -31,39 +31,29 @@ jobs:
           git submodule update --init --recursive --depth 1 lsplant/src/main/jni/external/dex_builder
       # ============================================================
 
-      # 核心修复：安装环境并动态创建软链接，抹平 Ubuntu 版本的命名差异
-      - name: Install Ninja & Clang Tools (for C++ Modules support)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build clang-tools clang
-          
-          # 动态寻找系统里带版本号的二进制文件（取最新版本），并软链接到 CMake 指定的通用路径
-          SCAN_DEPS_BIN=$(ls /usr/bin/clang-scan-deps-* 2>/dev/null | sort -V | tail -n 1)
-          if [ -n "$SCAN_DEPS_BIN" ]; then
-            echo "✓ 成功检测到依赖扫描器: $SCAN_DEPS_BIN"
-            sudo ln -sf "$SCAN_DEPS_BIN" /usr/bin/clang-scan-deps
-          else
-            echo "❌ Error: 未能在系统中检测到任何版本的 clang-scan-deps！"
-            exit 1
-          fi
+      # 删除了所有杂乱的 clang-tools 安装，只保留纯净的 ninja-build
+      - name: Install Ninja (for C++ Modules support)
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
 
-      - name: Setup Android NDK r26d
+      # 核心变动：直接升级到自带 C++20 模块全家桶工具链的 NDK r27
+      - name: Setup Android NDK r27
         uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
-          ndk-version: r26d
+          ndk-version: r27
           add-to-path: true
 
-      - name: Configure and Build with CMake (Ninja + C++ Modules)
+      - name: Configure and Build with CMake (Ninja + Auto C++ Modules)
         working-directory: native
         run: |
           rm -rf build
           mkdir -p build
           
+          # 删除了硬编码的 CMAKE_CXX_COMPILER_CLANG_SCAN_DEPS 路径
+          # CMake 会在 NDK r27 内部自动搜寻并配对最完美的依赖扫描器
           cmake -B build \
             -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
-            -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS=/usr/bin/clang-scan-deps \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-26 \
             -DCMAKE_BUILD_TYPE=Release
