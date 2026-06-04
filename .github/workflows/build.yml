@@ -1,4 +1,4 @@
-Name: Build Magisk Module
+name: Build Magisk Module
 
 on:
   push:
@@ -39,14 +39,12 @@ jobs:
           ndk-version: r26d
           add-to-path: true
 
-      # 关键修正：修复了多行命令的注释语法，引入 working-directory
       - name: Configure and Build with CMake (Ninja + C++ Modules)
         working-directory: native
         run: |
           rm -rf build
           mkdir -p build
           
-          # 注释必须单独写在上面，不能跟在续行符 \ 后面
           cmake -B build \
             -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
@@ -54,7 +52,6 @@ jobs:
             -DANDROID_PLATFORM=android-26 \
             -DCMAKE_BUILD_TYPE=Release
 
-          # 使用 -j1 方便出错时精准定位，稳定后建议改回 -j$(nproc)
           cmake --build build --config Release -- -j1
 
       - name: Prepare Magisk Module
@@ -72,12 +69,10 @@ jobs:
             exit 1
           fi
 
-          # 复制 hooker.dex（如果有）
           if [ -f "template/hooker.dex" ]; then
             cp template/hooker.dex MagiskModule/hooker.dex
           fi
 
-          # 确保关键描述文件存在，否则打包无意义
           if [ -f "module.prop" ]; then
             cp module.prop MagiskModule/
           else
