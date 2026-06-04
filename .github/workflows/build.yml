@@ -14,8 +14,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
@@ -29,15 +27,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build
 
-      - name: Prepare LSPlant
+      - name: Prepare LSPlant (manual clone to avoid problematic submodules)
         run: |
-          # 如果你把 LSPlant 作为 submodule，这里会自动拉取
-          # 如果没有 submodule，请手动把 lsplant 源码放到 external/lsplant
+          # 只克隆 LSPlant 主仓库，不递归其测试子模块（lsparself / lsprism 常导致失败）
           if [ ! -d "external/lsplant" ]; then
-            echo "LSPlant not found as submodule. Please add it."
-            # 这里可以加 git clone 作为 fallback
-            git clone --depth 1 https://github.com/LSPosed/LSPlant.git external/lsplant || true
+            git clone --depth 1 https://github.com/LSPosed/LSPlant.git external/lsplant
           fi
+          # 只保留我们需要的头文件目录，其余测试代码不需要
+          rm -rf external/lsplant/test || true
 
       - name: Build arm64-v8a
         run: |
@@ -56,7 +53,6 @@ jobs:
           cp build/zygisk/arm64-v8a/libbootloader_spoofer.so MagiskModule/zygisk/arm64-v8a/arm64-v8a.so
           cp module.prop MagiskModule/
           cp customize.sh MagiskModule/
-          # 如果有其他文件（如 META-INF）可以在这里添加
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
