@@ -4,7 +4,6 @@
 #include <cstring>
 #include <fstream>
 #include <vector>
-#include <dlfcn.h>
 #include "zygisk.hpp"
 
 #define LOG_TAG "BootloaderSpoofer"
@@ -13,7 +12,10 @@
 using zygisk::Api;
 using zygisk::AppSpecializeArgs;
 
-// ---------- 全局白名单配置 ----------
+static Api* g_zygisk_api = nullptr;
+static JavaVM* g_vm = nullptr;
+
+// ---------- 全局目标过滤 ----------
 static std::vector<std::string> targetList;
 static bool isTargetApp(const char* pkg) {
     if (!pkg) return false;
@@ -21,7 +23,6 @@ static bool isTargetApp(const char* pkg) {
     if (p == "com.android.se" || p == "com.google.android.gms" || p == "io.github.vvb2060.keyattestation") return true;
 
     if (targetList.empty()) {
-        // 严格对齐模块路径
         std::ifstream file("/data/adb/modules/zygisk-test/target.txt");
         if (file.is_open()) {
             std::string line;
@@ -40,95 +41,91 @@ static bool isTargetApp(const char* pkg) {
     return false;
 }
 
-// ---------- 核心算法：100% 对齐原版 Kotlin 字节修改逻辑 ----------
+// ---------- 核心算法：100% 字节强改 ----------
 static void patchRawExtensionBytes(jbyte* data, jsize len) {
     if (len < 6) return;
     for (jsize i = 0; i < len - 5; ++i) {
+        // 精准狙击 RootOfTrust 特征：deviceLocked (0x01 0x01 XX) 与 verifiedBootState (0x0A 0x01 XX)
         if (data[i] == 0x01 && data[i+1] == 0x01 && data[i+3] == 0x0A && data[i+4] == 0x01) {
-            LOGI("🎯 [JavaHook] 成功在扩展段字节流中定位到 RootOfTrust 结构！位置: %d", i);
+            LOGI("🎯 [ZygiskHook] 成功在 Conscrypt 管道中截获 RootOfTrust 特征结构！");
             
+            // 1. deviceLocked -> 强刷为 1 (true)
             if (data[i+2] == 0x00) {
                 data[i+2] = 0x01;
-                LOGI("🔒 forced deviceLocked -> true");
+                LOGI("🔒 [ZygiskHook] 状态强制修正 -> deviceLocked = LOCKED");
             }
+            // 2. verifiedBootState -> 强刷为 0 (VERIFIED)
             if (data[i+5] != 0x00) {
                 data[i+5] = 0x00;
-                LOGI("🛡️ forced verifiedBootState -> VERIFIED");
+                LOGI("🛡️ [ZygiskHook] 状态强制修正 -> verifiedBootState = VERIFIED");
             }
             break;
         }
     }
 }
 
-// ---------- JNI 篡改代理：接管 X509Certificate.getExtensionValue ----------
-static jobject g_orig_getExtensionValue_method = nullptr;
+// ---------- 备份原始 Conscrypt Native 函数的执行指针 ----------
+static jbyteArray (*orig_X509_get_ext_d2i)(JNIEnv*, jclass, jlong, jstring) = nullptr;
 
-extern "C" JNIEXPORT jbyteArray JNICALL Native_getExtensionValue_Proxy(JNIEnv* env, jobject thiz, jstring oid) {
-    jclass method_cls = env->FindClass("java/lang/reflect/Method");
-    jmethodID invoke_id = env->GetMethodID(method_cls, "invoke", "(java/lang/Object;[java/lang/Object;)java/lang/Object;");
-    
-    jobjectArray args = env->NewObjectArray(1, env->FindClass("java/lang/Object"), oid);
-    jbyteArray raw_res = (jbyteArray)env->CallObjectMethod(g_orig_getExtensionValue_method, invoke_id, thiz, args);
-    
-    if (raw_res == nullptr) return nullptr;
+// ---------- 我们的 Zygisk 代理拦截函数 ----------
+extern "C" jbyteArray My_X509_get_ext_d2i(JNIEnv* env, jclass clazz, jlong x509Ref, jstring oid) {
+    // 1. 先调用原始的 NativeCrypto 获取未修改的扩展数据
+    jbyteArray res = orig_X509_get_ext_d2i(env, clazz, x509Ref, oid);
+    if (res == nullptr) return nullptr;
 
-    const char* oid_str = env->GetStringUTFChars(oid, nullptr);
-    bool is_target_oid = (oid_str && strcmp(oid_str, "1.3.6.1.4.1.11129.2.1.17") == 0);
-    env->ReleaseStringUTFChars(oid, oid_str);
-
-    if (is_target_oid) {
-        jsize len = env->GetArrayLength(raw_res);
-        jbyte* p_bytes = env->GetByteArrayElements(raw_res, nullptr);
-        if (p_bytes) {
-            patchRawExtensionBytes(p_bytes, len);
-            env->ReleaseByteArrayElements(raw_res, p_bytes, 0);
+    // 2. 判定是否为谷歌密钥认证的 OID
+    if (oid != nullptr) {
+        const char* oid_str = env->GetStringUTFChars(oid, nullptr);
+        if (oid_str && strcmp(oid_str, "1.3.6.1.4.1.11129.2.1.17") == 0) {
+            jsize len = env->GetArrayLength(res);
+            jbyte* p_bytes = env->GetByteArrayElements(res, nullptr);
+            if (p_bytes) {
+                patchRawExtensionBytes(p_bytes, len);
+                env->ReleaseByteArrayElements(res, p_bytes, 0); // 0 表示就地覆盖并同步回 Java 虚拟机内存
+            }
         }
+        env->ReleaseStringUTFChars(oid, oid_str);
     }
-    // 【核心修复】：显式返回获取到且经过篡改的字节流数组，防止编译器报错
-    return raw_res;
+    return res;
 }
 
-// ---------- 核心注入点：利用 JNI 全局劫持 Java 核心类 ----------
-static void injectJavaLayerHook(JNIEnv* env) {
-    static bool java_hooked = false;
-    if (java_hooked) return;
+// ---------- 利用 Zygisk 官方专属 API 进行底层运行时强刷 ----------
+static void executeZygiskOfficialHook(JNIEnv* env) {
+    if (!g_zygisk_api) return;
 
-    LOGI("🚀 Zygisk 正在切入 Java 运行时环境进行全局劫持...");
+    LOGI("🚀 正在激活 Zygisk 核心通道，强行挂钩 Conscrypt 底层通信咽喉...");
 
-    jclass x509_cls = env->FindClass("java/security/cert/X509Certificate");
-    if (!x509_cls) {
-        LOGI("❌ 未能找到 X509Certificate 类");
-        return;
-    }
+    // 描述我们要 Hook 的真正底层原生方法
+    JNINativeMethod hook_methods[] = {
+        {"X509_get_ext_d2i", "(JLjava/lang/String;)[B", (void*)&My_X509_get_ext_d2i}
+    };
 
-    jmethodID target_method_id = env->GetMethodID(x509_cls, "getExtensionValue", "(java/lang/String;)[B");
-    if (target_method_id) {
-        jobject method_obj = env->ToReflectedMethod(x509_cls, target_method_id, JNI_FALSE);
-        g_orig_getExtensionValue_method = env->NewGlobalRef(method_obj);
+    // 针对 Conscrypt 的底层 Native 映射类直接重定向
+    g_zygisk_api->hookJniNativeMethods(env, "com/android/org/conscrypt/NativeCrypto", hook_methods, 1);
+    
+    // Zygisk 执行后会自动在原结构体 fnPtr 中回填系统原始函数的函数指针
+    orig_X509_get_ext_d2i = (jbyteArray (*)(JNIEnv*, jclass, jlong, jstring))hook_methods[0].fnPtr;
 
-        // 正确的 Java 类 JNI 签名格式：Ljava/lang/String;
-        JNINativeMethod g_methods[] = {
-            {"getExtensionValue", "(Ljava/lang/String;)[B", (void*)&Native_getExtensionValue_Proxy}
-        };
-        
-        if (env->RegisterNatives(x509_cls, g_methods, 1) == 0) {
-            LOGI("🎉 [JavaHook] 成功接管 X509Certificate.getExtensionValue()！");
-            java_hooked = true;
-        } else {
-            LOGI("❌ 动态注册代理失败");
-        }
-    }
+    LOGI("🎉 [ZygiskHook] 底层 NativeCrypto 管道接管完毕！");
 }
 
-// ---------- Zygisk 接口包装 ----------
+// ---------- Zygisk 标准生命周期入口 ----------
 class BootloaderSpoofer : public zygisk::ModuleBase {
 public:
-    void onLoad(Api *api, JNIEnv *env) override {}
+    void onLoad(Api *api, JNIEnv *env) override {
+        g_zygisk_api = api;
+        // 【核心修复】：在加载时通过正规渠道换取并缓存 JavaVM 指针，彻底丢弃不合规的 args->env
+        env->GetJavaVM(&g_vm);
+    }
 
     void preAppSpecialize(AppSpecializeArgs *args) override {
         if (!args || !args->nice_name) return;
         
-        JNIEnv* env = args->env; 
+        // 【核心修复】：通过全局缓存的虚拟机对象安全换取当前隔离线程的 JNIEnv 环境
+        JNIEnv* env = nullptr;
+        if (g_vm && g_vm->GetEnv((void**)&env, JNI_VERSION_1_6) == JNI_EDETACHED) {
+            g_vm->AttachCurrentThread(&env, nullptr);
+        }
         if (!env) return;
 
         const char* process_name = env->GetStringUTFChars(args->nice_name, nullptr);
@@ -138,7 +135,7 @@ public:
         env->ReleaseStringUTFChars(args->nice_name, process_name);
 
         if (matched) {
-            injectJavaLayerHook(env);
+            executeZygiskOfficialHook(env);
         }
     }
 };
