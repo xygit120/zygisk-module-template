@@ -14,38 +14,31 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Setup Android NDK
+      - name: Setup Android NDK r26d
         uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
           ndk-version: r26d
           add-to-path: true
 
-      - name: Install dependencies
+      - name: Prepare Android SDK structure
         run: |
-          sudo apt-get update
-          sudo apt-get install -y python3 python3-pip cmake ninja-build
+          mkdir -p $HOME/android-sdk/ndk
+          ln -sfn ${{ steps.setup-ndk.outputs.ndk-path }} $HOME/android-sdk/ndk/r26d
+          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
 
       - name: Prepare LSPlant
         run: |
-          # 修复 LSPlant 子模块 SSH 问题
           git config --global url."https://github.com/".insteadOf git@github.com:
+          rm -rf external/lsplant
+          git clone --depth 1 https://github.com/LSPosed/LSPlant.git external/lsplant
+          rm -rf external/lsplant/test external/lsplant/docs || true
 
-          # 手动 clone LSPlant（避免拉取有问题的测试子模块）
-          if [ ! -d "external/lsplant" ]; then
-            git clone --depth 1 https://github.com/LSPosed/LSPlant.git external/lsplant
-          fi
-
-          # 清理不需要的目录，减少体积
-          rm -rf external/lsplant/test external/lsplant/docs external/lsplant/.git || true
-
-          # 验证头文件是否存在
-          ls -la external/lsplant/lsplant/src/main/jni/include/ || echo "Warning: include dir not found"
-
-      - name: Build module (all ABIs)
-        run: |
-          python3 build.py zip --force --save-debug
+      - name: Build Magisk Module
+        run: python3 build.py zip --force --save-debug
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -59,8 +52,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: release/*.zip
-          tag_name: ${{ github.ref_name }}
-          name: Bootloader Spoofer ${{ github.ref_name }}
-          draft: false
-          prerelease: false
-          generate_release_notes: true
+          tag_name: build-${{ github.run_number }}
+          name: Bootloader Spoofer Build ${{ github.run_number }}
