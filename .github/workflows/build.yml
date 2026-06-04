@@ -1,4 +1,4 @@
-name: Build Magisk Module
+name: Build Bootloader Spoofer
 
 on:
   push:
@@ -15,59 +15,52 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Android NDK r26d
+      - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
           ndk-version: r26d
           add-to-path: true
 
-      - name: Configure and Build with CMake
+      - name: Install dependencies
         run: |
-          mkdir -p build
-          cd build
-          cmake ../native \
-            -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-26 \
-            -DCMAKE_BUILD_TYPE=Release
-          cmake --build . --config Release -j$(nproc)
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-pip cmake ninja-build
 
-      - name: Prepare Magisk Module
+      - name: Prepare LSPlant
         run: |
-          mkdir -p MagiskModule/zygisk/arm64-v8a
-          
-          # 查找编译好的 .so 文件
-          SO_PATH=$(find . -path "*/arm64-v8a/*.so" -o -name "lib*.so" | head -1)
-          
-          if [ -n "$SO_PATH" ]; then
-            cp "$SO_PATH" MagiskModule/zygisk/arm64-v8a/arm64-v8a.so
-            echo "Copied .so from: $SO_PATH"
-          else
-            echo "Error: No .so file found!"
-            find . -name "*.so" | head -10
-            exit 1
+          # 修复 LSPlant 子模块 SSH 问题
+          git config --global url."https://github.com/".insteadOf git@github.com:
+
+          # 手动 clone LSPlant（避免拉取有问题的测试子模块）
+          if [ ! -d "external/lsplant" ]; then
+            git clone --depth 1 https://github.com/LSPosed/LSPlant.git external/lsplant
           fi
-          
-          cp module.prop MagiskModule/
-          [ -f customize.sh ] && cp customize.sh MagiskModule/ || true
+
+          # 清理不需要的目录，减少体积
+          rm -rf external/lsplant/test external/lsplant/docs external/lsplant/.git || true
+
+          # 验证头文件是否存在
+          ls -la external/lsplant/lsplant/src/main/jni/include/ || echo "Warning: include dir not found"
+
+      - name: Build module (all ABIs)
+        run: |
+          python3 build.py zip --force --save-debug
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: BootloaderSpoofer-Zygisk
-          path: MagiskModule/
+          path: release/*.zip
+          retention-days: 7
 
-      - name: Create Release Zip
-        if: github.event_name != 'pull_request'
-        run: |
-          cd MagiskModule
-          zip -r ../BootloaderSpoofer-Zygisk.zip ./*
-
-      - name: Upload Release
+      - name: Create Release
         if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
-          files: BootloaderSpoofer-Zygisk.zip
-          tag_name: v${{ github.run_number }}
-          name: BootloaderSpoofer Zygisk Build ${{ github.run_number }}
+          files: release/*.zip
+          tag_name: ${{ github.ref_name }}
+          name: Bootloader Spoofer ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true

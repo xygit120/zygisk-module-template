@@ -1,28 +1,30 @@
 cmake_minimum_required(VERSION 3.22.1)
-project(BootloaderSpoofer LANGUAGES CXX)
+project(bootloader-spoofer)
 
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+macro(strip_and_move NAME)
+    add_custom_command(TARGET ${NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${DEBUG_SYMBOLS_PATH}
+            COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${NAME}> ${DEBUG_SYMBOLS_PATH}/$<TARGET_FILE_NAME:${NAME}>
+            COMMAND ${CMAKE_STRIP} --strip-all $<TARGET_FILE:${NAME}>
+    )
+endmacro()
 
-if(NOT ANDROID_ABI)
-    set(ANDROID_ABI arm64-v8a)
+set(CXX_FLAGS "${CXX_FLAGS} -fno-exceptions -fno-rtti -fvisibility=hidden -fvisibility-inlines-hidden")
+
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CXX_FLAGS}")
+
+# ==================== LSPlant 支持 ====================
+# 请把 LSPlant 源码 clone 到 external/lsplant
+# git clone https://github.com/LSPosed/LSPlant.git external/lsplant
+set(LSPLANT_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../external/lsplant/lsplant/src/main/jni/include)
+
+if(EXISTS ${LSPLANT_INCLUDE_DIR}/lsplant.hpp)
+    message(STATUS "Found LSPlant headers at: ${LSPLANT_INCLUDE_DIR}")
+    include_directories(${LSPLANT_INCLUDE_DIR})
+else()
+    message(WARNING "LSPlant not found! Please run: git clone https://github.com/LSPosed/LSPlant.git external/lsplant")
 endif()
 
-add_library(bootloader_spoofer SHARED
-    jni/zygisk_main.cpp
-)
-
-# ==================== 头文件路径 ====================
-# lsplant.hpp（你手动放的位置）
-include_directories(${CMAKE_CURRENT_SOURCE_DIR})
-
-# zygisk.hpp
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/jni)
-
-target_link_libraries(bootloader_spoofer
-    log
-)
-
-set_target_properties(bootloader_spoofer PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY \( {CMAKE_CURRENT_SOURCE_DIR}/zygisk/ \){ANDROID_ABI}
-)
+add_library(${MODULE_NAME} SHARED main.cpp)
+target_link_libraries(${MODULE_NAME} PRIVATE log)
+strip_and_move(${MODULE_NAME})
