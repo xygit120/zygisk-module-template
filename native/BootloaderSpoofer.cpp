@@ -13,21 +13,21 @@
 
 using namespace zygisk;
 
-// ---------- JNI 环境捕获 ----------
-static JNIEnv* getJNIEnv() {
+// ---------- 动态安全获取 JNIEnv 环境 ----------
+static JNIEnv* getSafeJNIEnv() {
     typedef jint (*JNI_GetCreatedJavaVMs_t)(JavaVM**, jsize, jsize*);
     void* handle = dlopen("libnativehelper.so", RTLD_LAZY);
     if (!handle) handle = RTLD_DEFAULT;
 
-    auto* pfnJNI_GetCreatedJavaVMs = (JNI_GetCreatedJavaVMs_t)dlsym(handle, "JNI_GetCreatedJavaVMs");
-    if (!pfnJNI_GetCreatedJavaVMs) {
+    auto* pfnGetVMs = (JNI_GetCreatedJavaVMs_t)dlsym(handle, "JNI_GetCreatedJavaVMs");
+    if (!pfnGetVMs) {
         if (handle != RTLD_DEFAULT) dlclose(handle);
         return nullptr;
     }
 
     JavaVM* vm = nullptr;
     jsize vm_count = 0;
-    if (pfnJNI_GetCreatedJavaVMs(&vm, 1, &vm_count) != JNI_OK || vm_count == 0) {
+    if (pfnGetVMs(&vm, 1, &vm_count) != JNI_OK || vm_count == 0) {
         if (handle != RTLD_DEFAULT) dlclose(handle);
         return nullptr;
     }
@@ -40,15 +40,15 @@ static JNIEnv* getJNIEnv() {
     return env;
 }
 
-// ---------- 目标过滤 (包含系统关键服务增强) ----------
+// ---------- 目标应用过滤控制 ----------
 static std::vector<std::string> targetList;
 
 static bool isTargetApp(const char* pkg) {
     if (!pkg) return false;
-    
-    // 强制全局对关键证书管理及系统服务开绿灯
     std::string p(pkg);
-    if (p == "com.android.se" || p == "com.google.android.gms" || p == "android.hardware.security.keymint") {
+
+    // 强行放行核心系统认证服务
+    if (p == "com.android.se" || p == "com.google.android.gms") {
         return true; 
     }
 
@@ -64,7 +64,7 @@ static bool isTargetApp(const char* pkg) {
             }
             file.close();
         } else {
-            return true; // 默认全局 Hook
+            return true; // 文件不存在时默认进行全局拦截
         }
     }
     for (const auto& t : targetList) {
@@ -73,7 +73,7 @@ static bool isTargetApp(const char* pkg) {
     return false;
 }
 
-// ---------- ASN.1 二进制解包伪造 ----------
+// ---------- 核心硬核篡改 ASN.1 证书树 ----------
 static bool patchAttestation(uint8_t* data, size_t len) {
     if (len < 200) return false;
     const uint8_t oid[] = {0x06, 0x0b, 0x2b, 0x06, 0x01, 0x04, 0x01, 0xd6, 0x79, 0x02, 0x01, 0x11};
@@ -82,17 +82,17 @@ static bool patchAttestation(uint8_t* data, size_t len) {
     for (size_t i = 0; i < len - sizeof(oid); ++i) {
         if (memcmp(data + i, oid, sizeof(oid)) == 0) {
             for (size_t j = i + 30; j < len - 8; ++j) {
-                // 1. 强制 deviceLocked 变为真值 (0x01 0x01 0x01)
+                // 1. 强制将 deviceLocked 伪造为闭锁状态 (0x01 0x01 0x01)
                 if (data[j] == 0x01 && data[j+1] == 0x01 && data[j+2] == 0x00) {
                     data[j+2] = 0x01;
                     patched = true;
-                    LOGI("Successfully forced deviceLocked -> true");
+                    LOGI("🔒 Successfully forced deviceLocked -> true");
                 }
-                // 2. 强制 verifiedBootState 变为 VERIFIED (0x0A 0x01 0x00)
+                // 2. 强制将 verifiedBootState 伪造为 VERIFIED 安全认证 (0x0A 0x01 0x00)
                 if (data[j] == 0x0A && data[j+1] == 0x01 && data[j+2] == 0x01) {
                     data[j+2] = 0x00;
                     patched = true;
-                    LOGI("Successfully forced verifiedBootState -> VERIFIED");
+                    LOGI("🛡️ Successfully forced verifiedBootState -> VERIFIED");
                 }
             }
             break;
@@ -101,7 +101,7 @@ static bool patchAttestation(uint8_t* data, size_t len) {
     return patched;
 }
 
-// ---------- ShadowHook 核心 ----------
+// ---------- ShadowHook 挂钩配置 ----------
 struct ASN1_OCTET_STRING {
     int length;
     int type;
@@ -125,63 +125,48 @@ static void doNativeHook() {
     if (hooked) return;
 
     if (shadowhook_init(SHADOWHOOK_MODE_UNIQUE, false) != 0) {
-        LOGI("ShadowHook runtime initialization failed");
+        LOGI("ShadowHook initialization failed");
         return;
     }
 
-    void* hook_stub = shadowhook_hook_sym_name(
-        "libcrypto.so", 
-        "X509_get_ext_d2i", 
-        (void*)hooked_X509_get_ext_d2i, 
-        (void**)&orig_X509_get_ext_d2i
-    );
+    // 针对常规和系统 APEX 沙盒内的 libcrypto.so 实施动态挂钩
+    void* stub = shadowhook_hook_sym_name("libcrypto.so", "X509_get_ext_d2i", (void*)hooked_X509_get_ext_d2i, (void**)&orig_X509_get_ext_d2i);
+    if (!stub) {
+        stub = shadowhook_hook_sym_name("/apex/com.android.runtime/lib64/bionic/libcrypto.so", "X509_get_ext_d2i", (void*)hooked_X509_get_ext_d2i, (void**)&orig_X509_get_ext_d2i);
+    }
 
-    if (hook_stub != nullptr) {
-        LOGI("Native Hook setup success in libcrypto.so");
+    if (stub != nullptr) {
+        LOGI("🚀 Native Hook applied successfully into libcrypto.so");
         hooked = true;
-    } else {
-        // 针对 Android 13+ APEX 沙盒进行重试
-        void* apex_stub = shadowhook_hook_sym_name(
-            "/apex/com.android.runtime/lib64/bionic/libcrypto.so", 
-            "X509_get_ext_d2i", 
-            (void*)hooked_X509_get_ext_d2i, 
-            (void**)&orig_X509_get_ext_d2i
-        );
-        if (apex_stub != nullptr) {
-            LOGI("Native Hook setup success in APEX runtime!");
-            hooked = true;
-        }
     }
 }
 
-// ---------- Zygisk 模块入口增强 ----------
+// ---------- Zygisk 框架对接接口 ----------
 class BootloaderSpoofer : public ModuleBase {
 public:
     void onLoad(Api *api, JNIEnv *env) override {
-        LOGI("BootloaderSpoofer loaded onto runtime");
+        // 在此处存储全局 api 句柄或初始化
     }
 
-    // 处理普通 App 进程
     void preAppSpecialize(AppSpecializeArgs *args) override {
-        if (args == nullptr || args->nice_name == nullptr) return;
+        if (!args || !args->nice_name) return;
 
-        JNIEnv* env = getJNIEnv();
-        if (env == nullptr) return; 
+        JNIEnv* env = getSafeJNIEnv();
+        if (!env) return;
 
-        const char* nice_name_chars = env->GetStringUTFChars(args->nice_name, nullptr);
-        if (nice_name_chars == nullptr) return;
+        const char* process_name = env->GetStringUTFChars(args->nice_name, nullptr);
+        if (!process_name) return;
 
-        std::string pkg = nice_name_chars;
-        env->ReleaseStringUTFChars(args->nice_name, nice_name_chars);
+        bool matched = isTargetApp(process_name);
+        env->ReleaseStringUTFChars(args->nice_name, process_name);
 
-        if (isTargetApp(pkg.c_str())) {
+        if (matched) {
             doNativeHook();
         }
     }
 
-    // 【新增修复点】处理系统核心服务进程，防止被系统框架层绕过
     void preServerSpecialize(ServerSpecializeArgs *args) override {
-        // 系统核心进程一律直接部署 Hook 逻辑
+        // 系统核心进程必须无条件注入，防止被证书框架绕过
         doNativeHook();
     }
 };
