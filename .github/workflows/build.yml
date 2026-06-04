@@ -15,33 +15,42 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Android NDK
+      - name: Setup Android NDK r26d
         uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
           ndk-version: r26d
           add-to-path: true
 
-      - name: Build Module (zip)
+      - name: Configure and Build with CMake
         run: |
-          python build.py zip --ndk ${{ steps.setup-ndk.outputs.ndk-path }}
+          mkdir -p build
+          cd build
+          cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26 \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build . --config Release -j$(nproc)
 
       - name: Prepare Magisk Module
         run: |
-          mkdir -p MagiskModule
+          mkdir -p MagiskModule/zygisk/arm64-v8a
           
-          # 模板默认会把 zip 输出到 release 目录
-          if [ -d "release" ]; then
-            cp release/*.zip MagiskModule/ || true
+          # 查找编译好的 .so 文件
+          SO_PATH=$(find . -path "*/arm64-v8a/*.so" -o -name "lib*.so" | head -1)
+          
+          if [ -n "$SO_PATH" ]; then
+            cp "$SO_PATH" MagiskModule/zygisk/arm64-v8a/arm64-v8a.so
+            echo "Copied .so from: $SO_PATH"
+          else
+            echo "Error: No .so file found!"
+            find . -name "*.so" | head -10
+            exit 1
           fi
           
-          # 同时复制原始文件，方便手动安装
-          mkdir -p MagiskModule/zygisk/arm64-v8a
           cp module.prop MagiskModule/
           [ -f customize.sh ] && cp customize.sh MagiskModule/ || true
-          
-          # 尝试提取 so 文件
-          find . -name "*.so" -type f | head -1 | xargs -I {} cp {} MagiskModule/zygisk/arm64-v8a/arm64-v8a.so || true
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -52,12 +61,8 @@ jobs:
       - name: Create Release Zip
         if: github.event_name != 'pull_request'
         run: |
-          if ls release/*.zip 1> /dev/null 2>&1; then
-            cp release/*.zip BootloaderSpoofer-Zygisk.zip
-          else
-            cd MagiskModule
-            zip -r ../BootloaderSpoofer-Zygisk.zip ./*
-          fi
+          cd MagiskModule
+          zip -r ../BootloaderSpoofer-Zygisk.zip ./*
 
       - name: Upload Release
         if: github.event_name != 'pull_request'
