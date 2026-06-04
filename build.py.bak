@@ -126,6 +126,7 @@ def build_target(target, abi, plat, build_type):
     build_dir = BUILD_DIR / BUILD_DIR_NAME / abi
     config(abi, plat, build_type=build_type)
     exec_cmd(['cmake', "--build", build_dir, "--", target, f'-j{os.cpu_count()}'])
+    # TODO: return bin output
     return None
 
 def build_all(abi, plat, build_type, force):
@@ -148,8 +149,7 @@ def get_device_abi(device):
     return exec_out(cmd)
 
 
-# 【核心修改 1】全局支持列表精简为仅 arm64-v8a
-SUPPORTED_ABIS = ['arm64-v8a']
+SUPPORTED_ABIS = ['arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86', 'riscv64']
 
 
 def deploy(target, device, abi, dest, build_type):
@@ -165,7 +165,11 @@ def deploy(target, device, abi, dest, build_type):
 
 
 ABI_NAME_ALIAS = {
-    'arm64-v8a': ['arm64', 'a64', 'aarch64', 'arm64_v8a']
+    'arm64-v8a': ['arm64', 'a64', 'aarch64', 'arm64_v8a'],
+    'armeabi-v7a': ['armeabi', 'arm', 'arm32', 'a32', 'armeabi_v7a'],
+    'x86': ['i386', 'x32'],
+    'x86_64': ['x64', 'x86-64'],
+    'riscv64': ['riscv']
 }
 ABI_CHOICES = list(ABI_NAME_ALIAS.keys()) + sum(ABI_NAME_ALIAS.values(), [])
 ABI_MAP = {None: None}
@@ -177,10 +181,19 @@ def initialize_abi_alias():
 initialize_abi_alias()
 DEFAULT_ABI = "arm64-v8a"
 ABI_TO_ARCH = {
-    'arm64-v8a': 'aarch64'
+    'arm64-v8a': 'aarch64',
+    'armeabi-v7a': 'arm',
+    'x86_64': 'x86_64',
+    'x86': 'i386',
+    'riscv64': 'riscv64',
 }
+# https://topjohnwu.github.io/Magisk/guides.html#variables
 ABI_TO_MAGISK_ARCH = {
-    'arm64-v8a': 'arm64'
+    'arm64-v8a': 'arm64',
+    'armeabi-v7a': 'arm',
+    'x86_64': 'x64',
+    'x86': 'x86',
+    'riscv64': 'riscv64',
 }
 BUILD_TYPE_CHOICES = ["debug", "release"]
 BUILD_TYPE_CHOICES_MAP = {
@@ -219,7 +232,6 @@ def clean_cmd(args):
 
 def build_zip(args):
     build_type = BUILD_TYPE
-    # 【核心修改 2】由于前面精简了 ABI_TO_ARCH，这里只会循环并编译 arm64-v8a 架构
     for abi in ABI_TO_ARCH:
         build_all(
             abi=abi, plat=PLATFORM, build_type=build_type, force=args.force
@@ -230,6 +242,7 @@ def build_zip(args):
     shutil.rmtree(module_path, ignore_errors=True)
     os.makedirs(module_path, exist_ok=True)
 
+    # prepare files
     def fix_crlf(p: Path):
         with open(p, 'r', encoding='utf-8') as f:
             text = f.read()
@@ -253,18 +266,15 @@ def build_zip(args):
     shutil.copytree(module_template, module_path, dirs_exist_ok=True)
     shutil.copy(ROOT_DIR / 'README.md', module_path / 'README.md')
 
-    # 【核心修改 3】使用 os.walk 替换 Path.walk，完美解决低版本 Python 运行报错
-    for root, _, fns in os.walk(module_path):
-        p = Path(root)
+    for p, _, fns in module_path.walk():
         for fn in fns:
             if fn == 'mazoku':
                 continue
             fix_crlf(p / fn)
-            
     expand_text_file(module_path / 'module.prop', {
         'moduleId': MODULE_ID,
         'moduleName': MODULE_NAME,
-        'versionName': f"{RELEASE_NAME} ({GIT_COMMIT_COUNT}-{GIT_COMMIT_HASH}-{build_type})",
+        'versionName': f"{RELEASE_NAME} ({GIT_COMMIT_COUNT}-{GIT_COMMIT_HASH}-{build_type})", # TODO
         'versionCode': str(GIT_COMMIT_COUNT)
     })
     script_vars = {
@@ -278,6 +288,7 @@ def build_zip(args):
     expand_text_file(module_path / 'uninstall.sh', script_vars)
     expand_text_file(module_path / 'cleanup.sh', script_vars)
 
+    # filter empty lines and comments
     with open(module_path / 'sepolicy.rule', 'r', encoding='utf-8') as f:
         content = f.read()
     with open(module_path / 'sepolicy.rule', 'w', encoding='utf-8') as f:
@@ -285,6 +296,7 @@ def build_zip(args):
 
     shutil.copytree(NATIVE_OUTPUT_DIR, module_path, dirs_exist_ok=True)
 
+    # build zip
     build_name = f'{MODULE_NAME}-{RELEASE_NAME}-{GIT_COMMIT_COUNT}-{GIT_COMMIT_HASH}-{build_type}'
     zip_file_name = f"{build_name}.zip".replace(' ', '-')
     output_path = RELEASE_DIR / zip_file_name
@@ -295,10 +307,8 @@ def build_zip(args):
     except FileNotFoundError:
         pass
 
-    # 【核心修改 4】压缩 ZIP 阶段：同样使用 os.walk 替换掉 Path.walk
     with zipfile.ZipFile(output_path, 'w', compression=zipfile.ZIP_DEFLATED) as out_zip:
-        for root, dns, fns in os.walk(module_path):
-            p = Path(root)
+        for p, dns, fns in module_path.walk():
             for dn in dns:
                 d = p / dn
                 rp = str(d.relative_to(module_path)).replace('\\', '/')
@@ -318,14 +328,12 @@ def build_zip(args):
 
     print(f"* output {output_path}")
 
-    # 【核心修改 5】调试符号打包阶段：同样使用 os.walk 替换掉 Path.walk
     if args.save_debug:
         symbols_name = f"{build_name}-symbols.zip".replace(' ', '-')
         symbols_out = ROOT_DIR / "symbols" / symbols_name
         os.makedirs(symbols_out.parent, exist_ok=True)
         with zipfile.ZipFile(symbols_out, 'w', compression=zipfile.ZIP_DEFLATED) as out_zip:
-            for root, dns, fns in os.walk(UNSTRIPPED_OUTPUT_DIR):
-                p = Path(root)
+            for p, dns, fns in UNSTRIPPED_OUTPUT_DIR.walk():
                 for dn in dns:
                     d = p / dn
                     rp = str(d.relative_to(UNSTRIPPED_OUTPUT_DIR)).replace('\\', '/')
@@ -345,4 +353,71 @@ def zip_cmd(args):
     build_zip(args)
 
 
-def
+def flash(args):
+    if args.skip:
+        zip_file = max(RELEASE_DIR.glob(f"*-{BUILD_TYPE}.zip"), key=os.path.getmtime)
+    else:
+        zip_file = build_zip(args)
+    print('use zip file', zip_file)
+    root = args.root
+    if root is None:
+        root = ''
+    else:
+        root = root.lower()
+    name = os.path.basename(zip_file)
+    exec_adb_cmd(['push', zip_file, f'/data/local/tmp/{name}'], device=args.device)
+    exec_adb_cmd(['push', ROOT_DIR / "scripts/install_module.sh", "/data/local/tmp/install_module.sh"], device=args.device)
+    exec_adb_shell(f"sh /data/local/tmp/install_module.sh /data/local/tmp/{name}", device=args.device, root=True)
+    exec_adb_shell(f"rm /data/local/tmp/install_module.sh /data/local/tmp/{name}", device=args.device, root=True, ignore_error=True)
+    if args.reboot:
+        exec_adb_shell("svc power reboot || reboot", device=args.device, root=True, ignore_error=True)
+
+
+def main():
+    ap = ArgumentParser(
+        prog="build",
+        description=""
+    )
+    ap.add_argument('--ndk', dest='ndk', required=False, help="ndk")
+    ap.add_argument('--save-debug', dest='save_debug', action='store_true')
+    ap.add_argument('--force', dest='force', help="build without cache", action='store_true')
+    ap.add_argument('-t', dest='build_type', choices=BUILD_TYPE_CHOICES, default=BUILD_TYPE_CHOICES[0])
+
+    subps = ap.add_subparsers(required=True)
+
+    build_args = subps.add_parser('build')
+    build_args.add_argument('target', nargs='?')
+    build_args.add_argument('-a', dest='abi', choices=ABI_CHOICES, default=DEFAULT_ABI)
+    build_args.set_defaults(func=build_cmd)
+
+    config_args = subps.add_parser('config')
+    config_args.set_defaults(func=config_cmd)
+    config_args.add_argument('-a', dest='abi', choices=ABI_CHOICES, default=DEFAULT_ABI)
+
+    deploy_args = subps.add_parser('deploy')
+    deploy_args.add_argument('target')
+    deploy_args.set_defaults(func=deploy_cmd)
+    deploy_args.add_argument('-s', dest='device', required=False)
+    deploy_args.add_argument('-a', dest='abi', choices=ABI_CHOICES, default=None)
+    deploy_args.add_argument('-d', dest='dest', default='/data/local/tmp')
+
+    clean_args = subps.add_parser('clean')
+    clean_args.add_argument('-a', '--abi', default=None)
+    clean_args.set_defaults(func=clean_cmd)
+
+    zip_args = subps.add_parser('zip')
+    zip_args.set_defaults(func=zip_cmd)
+
+    flash_args = subps.add_parser('flash')
+    flash_args.add_argument('-s', '--device', dest='device', required=False)
+    flash_args.add_argument('--root', dest='root', required=False)
+    flash_args.add_argument('-r', '--reboot', dest='reboot', action='store_true')
+    flash_args.add_argument('--skip', dest='skip', action='store_true')
+    flash_args.set_defaults(func=flash)
+
+    args = ap.parse_args(sys.argv[1:])
+    initialize(args)
+    args.func(args)
+
+
+main()
