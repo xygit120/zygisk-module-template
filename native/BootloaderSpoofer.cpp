@@ -44,6 +44,7 @@ static std::vector<std::string> targetList;
 static bool isTargetApp(const char* pkg) {
     if (!pkg) return false;
     std::string p(pkg);
+    // 强制放行系统关键认证相关组件
     if (p == "com.android.se" || p == "com.google.android.gms") return true;
 
     if (targetList.empty()) {
@@ -56,7 +57,7 @@ static bool isTargetApp(const char* pkg) {
             }
             file.close();
         } else {
-            return true; // 默认全局拦截
+            return true; // 默认全局拦截（若 target.txt 不存在或为空）
         }
     }
     for (const auto& t : targetList) {
@@ -74,17 +75,47 @@ static int findBytesIndex(const uint8_t* haystack, size_t haystack_len, const ui
     return -1;
 }
 
-// ---------- 核心解析与篡改 (100% 对齐原 Xposed 逻辑) ----------
+// ---------- 辅助工具：将字节数组转为 Hex 字符串（限制最大打印长度） ----------
+static std::string toHex(const uint8_t* buf, size_t len, size_t max_len = 128) {
+    const char hex_chars[] = "0123456789ABCDEF";
+    std::string str;
+    size_t parse_len = (len > max_len) ? max_len : len;
+    for (size_t i = 0; i < parse_len; ++i) {
+        str.push_back(hex_chars[(buf[i] >> 4) & 0x0F]);
+        str.push_back(hex_chars[buf[i] & 0x0F]);
+        str.push_back(' ');
+    }
+    if (len > max_len) str += "...";
+    return str;
+}
+
+// ---------- 核心解析、Dump 与篡改 (对齐原 Xposed 逻辑) ----------
 static bool patchAttestation(uint8_t* data, size_t len) {
+    // 日志埋点 1：打印每次进入该函数的原始大小
+    LOGI("🔍 [Dump] Entered patchAttestation with data length: %zu", len);
+
+    // 日志埋点 2：打印前 64 个字节的 Hex 头部，直观确认是否为标准 ASN.1 序列
+    LOGI("🔍 [Dump] Data Head (First 64B): %s", toHex(data, len, 64).c_str());
+
+    // 验证 Key Attestation 顶层扩展 OID (1.3.6.1.4.1.11129.2.1.17)
     const uint8_t attestation_oid[] = {0x06, 0x0b, 0x2b, 0x06, 0x01, 0x04, 0x01, 0xd6, 0x79, 0x02, 0x01, 0x11};
-    if (findBytesIndex(data, len, attestation_oid, sizeof(attestation_oid)) == -1) {
+    int oid_index = findBytesIndex(data, len, attestation_oid, sizeof(attestation_oid));
+    
+    if (oid_index == -1) {
         return false; 
     }
+
+    // 日志埋点 3：定位到 Key Attestation 数据，打印 OID 后面 128 字节的内容
+    LOGI("🎯 [Dump] Found Key Attestation OID at index: %d", oid_index);
+    LOGI("🔍 [Dump] Data after OID (128B): %s", toHex(data + oid_index, len - oid_index, 128).c_str());
     
     bool patched = false;
     for (size_t i = 0; i < len - 8; ++i) {
         // 匹配特征：deviceLocked(BOOLEAN) 紧邻 verifiedBootState(ENUMERATED)
         if (data[i] == 0x01 && data[i+1] == 0x01 && data[i+3] == 0x0A && data[i+4] == 0x01) {
+            
+            LOGI("✨ [Dump] Matched RootOfTrust pattern at index: %zu", i);
+            LOGI("✨ [Dump] Before Patch -> deviceLocked: %02X, verifiedBootState: %02X", data[i+2], data[i+5]);
             
             // 1. deviceLocked -> true (0x01)
             if (data[i+2] == 0x00) {
@@ -102,6 +133,10 @@ static bool patchAttestation(uint8_t* data, size_t len) {
             
             if (patched) break;
         }
+    }
+
+    if (!patched) {
+        LOGI("⚠️ [Dump] Failed to match RootOfTrust pattern in this block.");
     }
     return patched;
 }
@@ -165,6 +200,5 @@ public:
     }
 };
 
-// 仅仅使用这单一个经典宏注册核心。
-// 老版本头文件会通过这个宏直接完整导出接口，不再产生 client 符号重新定义的致命冲突。
+// 使用向下兼容的单模块注册宏（剔除了导致编译冲突的 Companion 注册宏）
 REGISTER_ZYGISK_MODULE(BootloaderSpoofer)
