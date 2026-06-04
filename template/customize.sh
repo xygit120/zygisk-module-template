@@ -1,9 +1,9 @@
 # shellcheck disable=SC2034
 SKIPUNZIP=1
 
-DEBUG=@DEBUG@
-SONAME=@SONAME@
-SUPPORTED_ABIS="@SUPPORTED_ABIS@"
+DEBUG=True
+SONAME=zygisk-test
+SUPPORTED_ABIS="arm64"
 
 if [ "$BOOTMODE" ] && [ "$KSU" ]; then
   ui_print "- Installing from KernelSU app"
@@ -59,29 +59,21 @@ extract "$ZIPFILE" 'post-fs-data.sh' "$MODPATH"
 extract "$ZIPFILE" 'service.sh'      "$MODPATH"
 mv "$TMPDIR/sepolicy.rule" "$MODPATH"
 
-HAS32BIT=false && ([ $(getprop ro.product.cpu.abilist32) ] || [ $(getprop ro.system.product.cpu.abilist32) ]) && HAS32BIT=true
+# 创建 zygisk 存放目录
+mkdir -p "$MODPATH/zygisk"
 
-mkdir "$MODPATH/zygisk"
-
+# 【核心修改】：彻底干掉 32 位解压，且根据你在 CMake 中 add_library 出来的库名字
+# 将打包进 lib/arm64-v8a/ 下的库正确释放并重命名为 Zygisk 规范的 arm64.so 
 if [ "$ARCH" = "x86" ] || [ "$ARCH" = "x64" ]; then
-  if [ "$HAS32BIT" = true ]; then
-    ui_print "- Extracting x86 libraries"
-    extract "$ZIPFILE" "lib/x86/lib$SONAME.so" "$MODPATH/zygisk/" true
-    mv "$MODPATH/zygisk/lib$SONAME.so" "$MODPATH/zygisk/x86.so"
-  fi
-
   ui_print "- Extracting x64 libraries"
-  extract "$ZIPFILE" "lib/x86_64/lib$SONAME.so" "$MODPATH/zygisk" true
-  mv "$MODPATH/zygisk/lib$SONAME.so" "$MODPATH/zygisk/x86_64.so"
+  extract "$ZIPFILE" "lib/x86_64/libzygisk_bootloader.so" "$MODPATH/zygisk" true
+  mv "$MODPATH/zygisk/libzygisk_bootloader.so" "$MODPATH/zygisk/x86_64.so"
 else
-  if [ "$HAS32BIT" = true ]; then
-    extract "$ZIPFILE" "lib/armeabi-v7a/lib$SONAME.so" "$MODPATH/zygisk" true
-    mv "$MODPATH/zygisk/lib$SONAME.so" "$MODPATH/zygisk/armeabi-v7a.so"
-  fi
-
   ui_print "- Extracting arm64 libraries"
-  extract "$ZIPFILE" "lib/arm64-v8a/lib$SONAME.so" "$MODPATH/zygisk" true
-  mv "$MODPATH/zygisk/lib$SONAME.so" "$MODPATH/zygisk/arm64-v8a.so"
+  # 注意：你的 CMake 编译出来的 so 名字叫 libzygisk_bootloader.so
+  extract "$ZIPFILE" "lib/arm64-v8a/libzygisk_bootloader.so" "$MODPATH/zygisk" true
+  # Zygisk 规范要求 64 位注入库最终必须命名为 arm64.so
+  mv "$MODPATH/zygisk/libzygisk_bootloader.so" "$MODPATH/zygisk/arm64.so"
 fi
 
 ui_print "- Setting permissions"
