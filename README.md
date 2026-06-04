@@ -1,72 +1,58 @@
-# BootloaderSpoofer - Zygisk + LSPlant 版
+# Bootloader Spoofer - Zygisk + LSPlant
 
-轻量级 Zygisk 模块，使用 LSPlant hook `Certificate.getExtensionValue` 来 spoof bootloader 状态（deviceLocked + verifiedBootState）。
+轻量 Zygisk 模块，通过 LSPlant hook `Certificate.getExtensionValue` 实现 Bootloader 状态 spoof（deviceLocked + verifiedBootState）。
 
-相比传统 LSPosed 方案，攻击面更小、隐藏性更好。
+隐藏性优于传统 LSPosed 方案，攻击面更小。
 
-## 已实现功能
+## 构建
 
-- Zygisk 注入 + LSPlant Java 方法 hook
-- 自动对 `com.google.android.gms` 和 `io.github.vvb2060.keyattestation` 生效
-- 已包含基础可工作的 patch 逻辑（deviceLocked = true, verifiedBootState = Verified）
-- 支持精确进程过滤（只注入需要的 App）
+```bash
+# 配置（生成 compile_commands.json）
+python build.py config -a arm64-v8a
 
-## 项目结构
+# 打包模块
+python build.py zip --force
 
-```
-BootloaderSpoofer-Zygisk/
-├── .github/workflows/build.yml   # GitHub Actions 自动编译
-├── jni/
-│   └── zygisk_main.cpp           # 核心 hook + patch 逻辑
-├── module.prop
-├── customize.sh
-├── CMakeLists.txt
-├── external/                     # LSPlant 放这里（submodule）
-└── README.md
+# 打包并刷入
+python build.py flash --reboot
 ```
 
-## 快速开始（推荐使用 GitHub Actions 自动编译）
+输出文件位于 `release/` 目录。
 
-### 方法一：最简单（推荐）
+## LSPlant 集成
 
-1. 把整个文件夹 push 到你的 GitHub 仓库
-2. 在仓库设置中启用 **Actions**
-3. 第一次 push 后，GitHub Actions 会自动编译并生成 `BootloaderSpoofer-Zygisk.zip`
-4. 下载 zip 后用 Magisk 安装即可
+首次构建前需要 clone LSPlant：
 
-### 方法二：本地编译
+```bash
+git clone https://github.com/LSPosed/LSPlant.git external/lsplant
+```
 
-1. 安装 Android NDK r26+
-2. 把 LSPlant 源码放到 `external/lsplant` 目录：
-   ```bash
-   git submodule add https://github.com/LSPosed/LSPlant.git external/lsplant
-   ```
-3. 编译：
-   ```bash
-   mkdir build && cd build
-   cmake .. -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26
-   make
-   ```
-4. 编译成功后 `zygisk/arm64-v8a/arm64-v8a.so` 就是最终的 so 文件
+## 目标进程
 
-## 使用建议
+默认只对以下包生效（可在 `main.cpp` 中修改 `kTargetPackages`）：
+- `com.google.android.gms` (Play Services)
+- `io.github.vvb2060.keyattestation` (测试 App)
 
-- 强烈建议配合 **Shamiko** 或 **Zygisk-Assistant** 使用
-- 测试时推荐使用 `io.github.vvb2060.keyattestation` 这个 App
-- 如需支持更多 App，在 `zygisk_main.cpp` 的 `kTargetPackages` 数组中添加即可
+## Build
 
-## 注意事项
+```bash
+# generate compile_commands.json
+python build.py config [-a abi]
+# build module zip
+python build.py zip
+# build and flash module zip
+python build.py flash [--reboot]
+```
 
-- LSPlant 必须正确引入，否则编译会失败
-- 当前 patch 逻辑为实用版，在大多数设备上可用
-- 如需更 robust 的 ASN.1 解析版本，可以告诉我继续优化
+The zip will be output to `release` .
 
-## 后续优化方向（可选）
+## Development environment
 
-- 更完整的 RootOfTrust 定位
-- 支持 verifiedBootHash 修改
-- 支持 security patch level 修改
-- 增加 keybox 模式
+- LLVM clangd  
+- VSCode + Clangd Plugin  
+- Android NDK  
+- CMake  
 
-需要我继续帮你优化 patch 逻辑还是有其他需求？
+## See also
+
+https://github.com/topjohnwu/zygisk-module-sample
