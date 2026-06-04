@@ -15,7 +15,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ==================== 自动克隆依赖（处理套娃子模块） ====================
+      # ==================== 自动克隆依赖 ====================
       - name: Clone Dobby
         working-directory: native
         run: |
@@ -26,10 +26,7 @@ jobs:
         working-directory: native
         run: |
           rm -rf external/lsplant
-          # 1. 克隆 LSPlant 主仓库
           git clone https://github.com/LSPosed/LSPlant.git external/lsplant --depth 1
-          
-          # 2. 进入目录，加上 --recursive 强制递归初始化 dex_builder 内部的所有嵌套子模块（如 parallel_hashmap）
           cd external/lsplant
           git submodule update --init --recursive --depth 1 lsplant/src/main/jni/external/dex_builder
       # ============================================================
@@ -53,6 +50,7 @@ jobs:
           cmake -B build \
             -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
+            -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang-scan-deps \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-26 \
             -DCMAKE_BUILD_TYPE=Release
