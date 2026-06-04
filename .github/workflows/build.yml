@@ -16,110 +16,45 @@ jobs:
         abi: [arm64-v8a, armeabi-v7a]
 
     steps:
-      - name: Checkout repository
+      - name: Checkout with submodules
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 1
 
-      - name: Setup Android NDK
+      - name: Setup Android NDK r27c
         uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
           ndk-version: r27c
           add-to-path: true
 
-      - name: Fix C++20 module scanning issues
+      - name: Patch dex_builder (fix C++20 modules issue)
         run: |
-          echo "=== 修复所有CMakeLists.txt中的C++模块扫描问题 ==="
-          
-          # 1. 修复dex_builder
-          DEX_BUILDER_DIR="native/external/lsplant/lsplant/src/main/jni/external/dex_builder"
-          if [ -f "$DEX_BUILDER_DIR/CMakeLists.txt" ]; then
-            echo "修复 $DEX_BUILDER_DIR/CMakeLists.txt"
-            cp "$DEX_BUILDER_DIR/CMakeLists.txt" "$DEX_BUILDER_DIR/CMakeLists.txt.backup"
+          DEX_DIR="native/external/lsplant/lsplant/src/main/jni/external/dex_builder"
+          if [ -f "$DEX_DIR/CMakeLists.txt" ]; then
+            echo "Patching dex_builder CMakeLists.txt..."
+            cp "$DEX_DIR/CMakeLists.txt" "$DEX_DIR/CMakeLists.txt.backup"
             
-            # 禁用C++模块扫描，设置C++17标准
-            sed -i '1i set(CMAKE_CXX_SCAN_FOR_MODULES OFF)' "$DEX_BUILDER_DIR/CMakeLists.txt"
-            sed -i '/project(dex_builder)/a set(CMAKE_CXX_STANDARD 17)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\nset(CMAKE_CXX_EXTENSIONS OFF)' "$DEX_BUILDER_DIR/CMakeLists.txt"
-            sed -i '/add_definitions(-std=c++20)/d' "$DEX_BUILDER_DIR/CMakeLists.txt"
+            # 在文件最前面禁用模块扫描
+            sed -i '1i set(CMAKE_CXX_SCAN_FOR_MODULES OFF)' "$DEX_DIR/CMakeLists.txt"
             
-            # 确保目标也设置C++标准
-            sed -i '/target_include_directories.*dex_builder.*/a \  \  set_target_properties(dex_builder PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)' "$DEX_BUILDER_DIR/CMakeLists.txt"
-            sed -i '/target_include_directories.*dex_builder_static.*/a \  \  set_target_properties(dex_builder_static PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)' "$DEX_BUILDER_DIR/CMakeLists.txt"
+            # 在 project(dex_builder) 后强制 C++17
+            sed -i '/project(dex_builder)/a set(CMAKE_CXX_STANDARD 17)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\nset(CMAKE_CXX_EXTENSIONS OFF)' "$DEX_DIR/CMakeLists.txt"
+            
+            # 删除可能存在的 C++20 定义
+            sed -i '/add_definitions(-std=c++20)/d' "$DEX_DIR/CMakeLists.txt"
+            
+            echo "dex_builder patched successfully"
           else
-            echo "警告: 未找到 $DEX_BUILDER_DIR/CMakeLists.txt"
+            echo "WARNING: dex_builder CMakeLists.txt not found"
           fi
-          
-          # 2. 修复lsplant的CMakeLists.txt
-          LSPLANT_DIR="native/external/lsplant/lsplant/src/main/jni"
-          if [ -f "$LSPLANT_DIR/CMakeLists.txt" ]; then
-            echo "修复 $LSPLANT_DIR/CMakeLists.txt"
-            cp "$LSPLANT_DIR/CMakeLists.txt" "$LSPLANT_DIR/CMakeLists.txt.backup"
-            
-            # 在project命令后添加设置
-            if grep -q "project(lsplant)" "$LSPLANT_DIR/CMakeLists.txt"; then
-              # 在project之后添加C++标准设置
-              sed -i '/project(lsplant)/a set(CMAKE_CXX_SCAN_FOR_MODULES OFF)\nset(CMAKE_CXX_STANDARD 17)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\nset(CMAKE_CXX_EXTENSIONS OFF)' "$LSPLANT_DIR/CMakeLists.txt"
-              
-              # 为每个目标设置C++标准
-              TARGETS=("lsplant_static" "lsplant_shared" "lsplant")
-              for target in "${TARGETS[@]}"; do
-                if grep -q "add_library.*$target" "$LSPLANT_DIR/CMakeLists.txt"; then
-                  sed -i "/add_library.*$target.*STATIC/,/^)/{/target_include_directories/i \  \  set_target_properties($target PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)}" "$LSPLANT_DIR/CMakeLists.txt"
-                  sed -i "/add_library.*$target.*SHARED/,/^)/{/target_include_directories/i \  \  set_target_properties($target PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)}" "$LSPLANT_DIR/CMakeLists.txt"
-                fi
-              done
-            fi
-          fi
-          
-          # 3. 创建顶层修复补丁
-          echo "=== 创建顶层CMake修复文件 ==="
-          cat > native/CMakeLists_fix.cmake << 'EOF'
-# 顶层CMake修复配置
-# 添加在顶级CMakeLists.txt的顶部
 
-# 全局禁用C++20模块扫描
-set(CMAKE_CXX_SCAN_FOR_MODULES OFF CACHE BOOL "Disable C++20 module scanning" FORCE)
-
-# 设置全局C++标准
-set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ standard to use" FORCE)
-set(CMAKE_CXX_STANDARD_REQUIRED ON CACHE BOOL "Require C++ standard" FORCE)
-set(CMAKE_CXX_EXTENSIONS OFF CACHE BOOL "Disable compiler extensions" FORCE)
-
-# 设置特定目标的C++标准函数
-function(set_target_cxx_standard target_name)
-  if(TARGET ${target_name})
-    set_target_properties(${target_name} PROPERTIES
-      CXX_STANDARD 17
-      CXX_STANDARD_REQUIRED ON
-      CXX_EXTENSIONS OFF
-    )
-  endif()
-endfunction()
-EOF
-          
-          echo "=== 修复完成 ==="
-
-      - name: Configure CMake with verbose output
+      - name: Configure (CMake)
         run: |
           cd native
-          mkdir -p build && cd build
+          rm -rf build && mkdir build && cd build
           
-          echo "=== CMake配置参数 ==="
-          echo "ANDROID_ABI: ${{ matrix.abi }}"
-          echo "ANDROID_NDK_HOME: $ANDROID_NDK_HOME"
-          
-          # 清理旧构建
-          rm -rf ./*
-          
-          # 应用修复配置
-          if [ -f ../CMakeLists_fix.cmake ]; then
-            echo "应用CMake修复配置"
-            cat ../CMakeLists_fix.cmake >> ../CMakeLists.txt
-          fi
-          
-          # 配置CMake
           cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=${{ matrix.abi }} \
@@ -130,75 +65,36 @@ EOF
             -DCMAKE_CXX_EXTENSIONS=OFF \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_VERBOSE_MAKEFILE=ON \
-            -G "Unix Makefiles" 2>&1 | tee cmake_configure.log
-          
-          echo "=== CMake配置完成 ==="
-          echo "CMake缓存变量:"
-          grep "CMAKE_CXX" CMakeCache.txt 2>/dev/null | head -20 || true
+            2>&1 | tee cmake_configure.log
 
-      - name: Build with detailed error output
+      - name: Build
         run: |
           cd native/build
+          echo "=== Building for ${{ matrix.abi }} ==="
           
-          echo "=== 开始构建 ==="
-          
-          # 首次构建，捕获详细输出
-          if make -j$(nproc) 2>&1 | tee build.log; then
-            echo "=== 构建成功 ==="
+          if cmake --build . --parallel $(nproc) 2>&1 | tee build.log; then
+            echo "✅ Build succeeded for ${{ matrix.abi }}"
           else
-            echo "=== 构建失败，分析错误 ==="
-            # 提取错误信息
-            grep -A 5 -B 5 "error:" build.log || true
-            grep -A 5 -B 5 "Error:" build.log || true
-            grep -A 5 -B 5 "CMake Error" build.log || true
-            
-            # 尝试分步构建
-            echo "=== 尝试分步构建 ==="
-            make clean
-            echo "1. 构建dex_builder..."
-            make dex_builder_static VERBOSE=1 || true
-            echo "2. 构建lsplant..."
-            make lsplant_static VERBOSE=1 || true
-            echo "3. 构建主目标..."
-            make VERBOSE=1 || true
-            
-            # 如果仍然失败，尝试使用ninja
-            echo "=== 尝试使用Ninja构建 ==="
-            cd ..
-            rm -rf build_ninja
-            mkdir build_ninja && cd build_ninja
-            cmake .. \
-              -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
-              -DANDROID_ABI=${{ matrix.abi }} \
-              -DANDROID_PLATFORM=android-24 \
-              -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
-              -DCMAKE_CXX_STANDARD=17 \
-              -DCMAKE_CXX_STANDARD_REQUIRED=ON \
-              -DCMAKE_CXX_EXTENSIONS=OFF \
-              -DCMAKE_BUILD_TYPE=Release \
-              -GNinja
-            ninja -v || ninja || true
+            echo "❌ Build failed, showing last errors:"
+            tail -100 build.log
+            exit 1
           fi
-          
-          echo "=== 构建产物检查 ==="
-          find . -name "*.so" -o -name "*.a" | xargs -I {} ls -la {} 2>/dev/null || echo "未找到构建产物"
 
-      - name: Upload build artifacts
-        if: success() || failure()
+      - name: Upload logs (always)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: zygisk-build-${{ matrix.abi }}-logs
+          name: logs-${{ matrix.abi }}
           path: |
             native/build/cmake_configure.log
             native/build/build.log
             native/external/lsplant/lsplant/src/main/jni/external/dex_builder/CMakeLists.txt.backup
-            native/external/lsplant/lsplant/src/main/jni/CMakeLists.txt.backup
-          retention-days: 7
+          retention-days: 14
 
-      - name: Archive build outputs
+      - name: Upload compiled module
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: zygisk-module-${{ matrix.abi }}
+          name: zygisk-${{ matrix.abi }}
           path: native/build/zygisk/${{ matrix.abi }}/
-          retention-days: 7
+          retention-days: 30
