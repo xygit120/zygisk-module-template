@@ -27,16 +27,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build
 
-      - name: Prepare LSPlant (manual clone to avoid problematic submodules)
+      - name: Prepare LSPlant
         run: |
-          # 只克隆 LSPlant 主仓库，不递归其测试子模块（lsparself / lsprism 常导致失败）
+          git config --global url."https://github.com/".insteadOf git@github.com:
           if [ ! -d "external/lsplant" ]; then
             git clone --depth 1 https://github.com/LSPosed/LSPlant.git external/lsplant
           fi
-          # 只保留我们需要的头文件目录，其余测试代码不需要
-          rm -rf external/lsplant/test || true
+          rm -rf external/lsplant/test external/lsplant/docs || true
 
-      - name: Build arm64-v8a
+      - name: Build
         run: |
           mkdir -p build
           cd build
@@ -47,31 +46,15 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release
           cmake --build . --config Release -j$(nproc)
 
-      - name: Prepare Magisk Module
+      - name: Prepare Module
         run: |
           mkdir -p MagiskModule/zygisk/arm64-v8a
           cp build/zygisk/arm64-v8a/libbootloader_spoofer.so MagiskModule/zygisk/arm64-v8a/arm64-v8a.so
           cp module.prop MagiskModule/
           cp customize.sh MagiskModule/
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: BootloaderSpoofer-Zygisk
           path: MagiskModule/
-
-      - name: Create Release Zip
-        if: github.event_name != 'pull_request'
-        run: |
-          cd MagiskModule
-          zip -r ../BootloaderSpoofer-Zygisk.zip . -x "*.git*"
-
-      - name: Upload Release Asset
-        if: github.event_name != 'pull_request'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: BootloaderSpoofer-Zygisk.zip
-          tag_name: ${{ github.ref_name }}
-          name: BootloaderSpoofer Zygisk ${{ github.ref_name }}
-          draft: false
-          prerelease: false
