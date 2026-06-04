@@ -8,12 +8,10 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -21,13 +19,10 @@ jobs:
           python-version: '3.11'
 
       - name: Build module
-        env:
-          # 显式指定使用 GitHub 镜像自带的稳定版 NDK r26 路径
-          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/26.3.11579264
         run: python3 build.py zip
 
       - name: Upload module zip
         uses: actions/upload-artifact@v4
         with:
-          name: module
+          name: BootloaderSpoofer-Module
           path: out/*.zip
