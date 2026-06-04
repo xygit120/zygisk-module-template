@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive   # 必须加这一行
 
       - name: Setup Python
         uses: actions/setup-python@v5
