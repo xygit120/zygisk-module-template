@@ -21,7 +21,7 @@ static bool isTargetApp(const char* pkg) {
     if (p == "com.android.se" || p == "com.google.android.gms" || p == "io.github.vvb2060.keyattestation") return true;
 
     if (targetList.empty()) {
-        // 【核心对齐】：这里路径必须修改为 /data/adb/modules/zygisk-test/target.txt 才能和你的 build.py 对应上
+        // 严格对齐模块路径
         std::ifstream file("/data/adb/modules/zygisk-test/target.txt");
         if (file.is_open()) {
             std::string line;
@@ -44,16 +44,13 @@ static bool isTargetApp(const char* pkg) {
 static void patchRawExtensionBytes(jbyte* data, jsize len) {
     if (len < 6) return;
     for (jsize i = 0; i < len - 5; ++i) {
-        // 匹配特征：deviceLocked(0x01 0x01 XX) 紧邻 verifiedBootState(0x0A 0x01 XX)
         if (data[i] == 0x01 && data[i+1] == 0x01 && data[i+3] == 0x0A && data[i+4] == 0x01) {
             LOGI("🎯 [JavaHook] 成功在扩展段字节流中定位到 RootOfTrust 结构！位置: %d", i);
             
-            // 1. deviceLocked -> true (0x01)
             if (data[i+2] == 0x00) {
                 data[i+2] = 0x01;
                 LOGI("🔒 forced deviceLocked -> true");
             }
-            // 2. verifiedBootState -> VERIFIED (0x00)
             if (data[i+5] != 0x00) {
                 data[i+5] = 0x00;
                 LOGI("🛡️ forced verifiedBootState -> VERIFIED");
@@ -87,6 +84,7 @@ extern "C" JNIEXPORT jbyteArray JNICALL Native_getExtensionValue_Proxy(JNIEnv* e
             env->ReleaseByteArrayElements(raw_res, p_bytes, 0);
         }
     }
+    // 【核心修复】：显式返回获取到且经过篡改的字节流数组，防止编译器报错
     return raw_res;
 }
 
@@ -108,7 +106,7 @@ static void injectJavaLayerHook(JNIEnv* env) {
         jobject method_obj = env->ToReflectedMethod(x509_cls, target_method_id, JNI_FALSE);
         g_orig_getExtensionValue_method = env->NewGlobalRef(method_obj);
 
-        // 【关键修复】：JNI 签名中类的全路径要用 / 分割，Ljava/lang/String;
+        // 正确的 Java 类 JNI 签名格式：Ljava/lang/String;
         JNINativeMethod g_methods[] = {
             {"getExtensionValue", "(Ljava/lang/String;)[B", (void*)&Native_getExtensionValue_Proxy}
         };
