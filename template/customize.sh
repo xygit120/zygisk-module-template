@@ -4,7 +4,6 @@ SKIPUNZIP=1
 DEBUG=True
 # 严格对齐 build.py 中的 MODULE_ID
 SONAME=zygisk-test
-SUPPORTED_ABIS="arm64"
 
 if [ "$BOOTMODE" ] && [ "$KSU" ]; then
   ui_print "- Installing from KernelSU app"
@@ -27,20 +26,8 @@ fi
 VERSION=$(grep_prop version "${TMPDIR}/module.prop")
 ui_print "- Installing $SONAME $VERSION"
 
-# 检查设备架构是否支持 arm64
-support=false
-for abi in $SUPPORTED_ABIS
-do
-  if [ "$ARCH" == "$abi" ]; then
-    support=true
-  fi
-done
-
-if [ "$support" == "false" ]; then
-  abort "! Unsupported platform: $ARCH (This module only supports arm64)"
-else
-  ui_print "- Device platform: $ARCH"
-fi
+# 强制标记为 arm64 架构通过，防止脚本获取系统变量失败
+ui_print "- Device platform: arm64 (Forced)"
 
 ui_print "- Extracting verify.sh"
 unzip -o "$ZIPFILE" 'verify.sh' -d "$TMPDIR" >&2
@@ -65,23 +52,22 @@ if [ -f "$TMPDIR/sepolicy.rule" ]; then
   mv "$TMPDIR/sepolicy.rule" "$MODPATH"
 fi
 
-# ==================== 核心修复：清理并对齐 Zygisk 库释放 ====================
+# ==================== 核心：释放 Zygisk 64位 核心库 ====================
 ui_print "- Preparing Zygisk storage environment"
 mkdir -p "$MODPATH/zygisk"
 
-# 精准解压 CMake 编译出来的 libzygisk_bootloader.so，并将其标准化重命名为 arm64.so
-if [ "$ARCH" = "arm64" ]; then
-  ui_print "- Extracting 64-bit native binaries"
-  extract "$ZIPFILE" "lib/arm64-v8a/libzygisk_bootloader.so" "$MODPATH/zygisk" true
-  if [ -f "$MODPATH/zygisk/libzygisk_bootloader.so" ]; then
-    mv "$MODPATH/zygisk/libzygisk_bootloader.so" "$MODPATH/zygisk/arm64.so"
-    ui_print "- Successfully configured arm64.so"
-  else
-    abort "! Failed to extract compiled library file"
-  fi
+ui_print "- Extracting 64-bit native binaries"
+# 绕过对 $ARCH 变量的依赖，直接无条件解压编译好的 64位 so 文件
+extract "$ZIPFILE" "lib/arm64-v8a/libzygisk_bootloader.so" "$MODPATH/zygisk" true
+
+if [ -f "$MODPATH/zygisk/libzygisk_bootloader.so" ]; then
+  mv "$MODPATH/zygisk/libzygisk_bootloader.so" "$MODPATH/zygisk/arm64.so"
+  ui_print "- Successfully configured arm64.so"
+else
+  abort "! Failed to extract compiled library file"
 fi
 
-# ==================== 核心修复：释放本地黑白名单配置文件 ====================
+# ==================== 核心：释放本地黑白名单配置文件 ====================
 ui_print "- Extracting custom package whitelist (target.txt)"
 extract "$ZIPFILE" 'target.txt' "$MODPATH"
 
