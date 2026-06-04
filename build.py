@@ -345,4 +345,71 @@ def zip_cmd(args):
     build_zip(args)
 
 
-def
+def flash(args):
+    if args.skip:
+        zip_file = max(RELEASE_DIR.glob(f"*-{BUILD_TYPE}.zip"), key=os.path.getmtime)
+    else:
+        zip_file = build_zip(args)
+    print('use zip file', zip_file)
+    root = args.root
+    if root is None:
+        root = ''
+    else:
+        root = root.lower()
+    name = os.path.basename(zip_file)
+    exec_adb_cmd(['push', zip_file, f'/data/local/tmp/{name}'], device=args.device)
+    exec_adb_cmd(['push', ROOT_DIR / "scripts/install_module.sh", "/data/local/tmp/install_module.sh"], device=args.device)
+    exec_adb_shell(f"sh /data/local/tmp/install_module.sh /data/local/tmp/{name}", device=args.device, root=True)
+    exec_adb_shell(f"rm /data/local/tmp/install_module.sh /data/local/tmp/{name}", device=args.device, root=True, ignore_error=True)
+    if args.reboot:
+        exec_adb_shell("svc power reboot || reboot", device=args.device, root=True, ignore_error=True)
+
+
+def main():
+    ap = ArgumentParser(
+        prog="build",
+        description=""
+    )
+    ap.add_argument('--ndk', dest='ndk', required=False, help="ndk")
+    ap.add_argument('--save-debug', dest='save_debug', action='store_true')
+    ap.add_argument('--force', dest='force', help="build without cache", action='store_true')
+    ap.add_argument('-t', dest='build_type', choices=BUILD_TYPE_CHOICES, default=BUILD_TYPE_CHOICES[0])
+
+    subps = ap.add_subparsers(required=True)
+
+    build_args = subps.add_parser('build')
+    build_args.add_argument('target', nargs='?')
+    build_args.add_argument('-a', dest='abi', choices=ABI_CHOICES, default=DEFAULT_ABI)
+    build_args.set_defaults(func=build_cmd)
+
+    config_args = subps.add_parser('config')
+    config_args.set_defaults(func=config_cmd)
+    config_args.add_argument('-a', dest='abi', choices=ABI_CHOICES, default=DEFAULT_ABI)
+
+    deploy_args = subps.add_parser('deploy')
+    deploy_args.add_argument('target')
+    deploy_args.set_defaults(func=deploy_cmd)
+    deploy_args.add_argument('-s', dest='device', required=False)
+    deploy_args.add_argument('-a', dest='abi', choices=ABI_CHOICES, default=None)
+    deploy_args.add_argument('-d', dest='dest', default='/data/local/tmp')
+
+    clean_args = subps.add_parser('clean')
+    clean_args.add_argument('-a', '--abi', default=None)
+    clean_args.set_defaults(func=clean_cmd)
+
+    zip_args = subps.add_parser('zip')
+    zip_args.set_defaults(func=zip_cmd)
+
+    flash_args = subps.add_parser('flash')
+    flash_args.add_argument('-s', '--device', dest='device', required=False)
+    flash_args.add_argument('--root', dest='root', required=False)
+    flash_args.add_argument('-r', '--reboot', dest='reboot', action='store_true')
+    flash_args.add_argument('--skip', dest='skip', action='store_true')
+    flash_args.set_defaults(func=flash)
+
+    args = ap.parse_args(sys.argv[1:])
+    initialize(args)
+    args.func(args)
+
+
+main()
