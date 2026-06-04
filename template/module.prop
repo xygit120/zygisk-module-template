@@ -1,7 +1,0 @@
-id=${moduleId}
-name=${moduleName}
-version=${versionName}
-versionCode=${versionCode}
-author=5ec1cff
-description=通过 LSPlant hook Certificate.getExtensionValue 实现 Bootloader 状态 spoof（deviceLocked + verifiedBootState）。隐藏性优于传统 LSPosed 方案。
-#updateJson=

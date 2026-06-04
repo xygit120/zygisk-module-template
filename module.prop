@@ -1,0 +1,6 @@
+id=bootloader-spoofer
+name=Bootloader Spoofer (Zygisk + LSPlant)
+version=v1.0
+versionCode=1
+author=ska + Grok
+description=通过 LSPlant hook Certificate.getExtensionValue 实现 Bootloader 状态 spoof（deviceLocked + verifiedBootState）。支持 GMS / KeyAttestation。

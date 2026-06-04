@@ -1,58 +1,50 @@
-# Bootloader Spoofer - Zygisk + LSPlant
+# Bootloader Spoofer - Zygisk + LSPlant + Dobby（完整版）
 
-轻量 Zygisk 模块，通过 LSPlant hook `Certificate.getExtensionValue` 实现 Bootloader 状态 spoof（deviceLocked + verifiedBootState）。
+通过 LSPlant hook `Certificate.getExtensionValue` 实现 Bootloader 状态 spoof（deviceLocked + verifiedBootState）。
 
-隐藏性优于传统 LSPosed 方案，攻击面更小。
+## 特性
 
-## 构建
+- 使用 LSPlant v2 进行 Java 方法 hook
+- 使用 Dobby 作为 inline hook 后端
+- 运行时加载 `hooker.dex`，通过 Java callback 调用 native patch
+- 只对指定应用生效（默认 GMS + KeyAttestation）
+
+## 构建步骤
+
+### 1. 添加 Dobby
 
 ```bash
-# 配置（生成 compile_commands.json）
+cd native
+git clone https://github.com/LSPosed/Dobby.git external/dobby
+```
+
+### 2. 构建模块
+
+```bash
 python build.py config -a arm64-v8a
-
-# 打包模块
+python build.py build
 python build.py zip --force
-
-# 打包并刷入
-python build.py flash --reboot
 ```
 
-输出文件位于 `release/` 目录。
+构建产物位于 `release/` 目录。
 
-## LSPlant 集成
+### 3. 安装
 
-首次构建前需要 clone LSPlant：
+使用 Magisk / KernelSU / APatch 安装生成的 zip 包。
 
-```bash
-git clone https://github.com/LSPosed/LSPlant.git external/lsplant
-```
+## 文件说明
 
-## 目标进程
+- `hooker.dex`：AttestationHooker Java 类（已打包进模块）
+- `native/main.cpp`：核心逻辑（已集成 Dobby + dex 加载）
+- `native/CMakeLists.txt`：Dobby 自动集成配置
 
-默认只对以下包生效（可在 `main.cpp` 中修改 `kTargetPackages`）：
-- `com.google.android.gms` (Play Services)
-- `io.github.vvb2060.keyattestation` (测试 App)
+## 注意事项
 
-## Build
+- 首次编译前必须执行 `git clone Dobby`
+- 如果编译失败，请检查 NDK 版本（推荐 r26d 或更高）
+- Dobby hook 成功后，模块即可正常工作
 
-```bash
-# generate compile_commands.json
-python build.py config [-a abi]
-# build module zip
-python build.py zip
-# build and flash module zip
-python build.py flash [--reboot]
-```
+## 致谢
 
-The zip will be output to `release` .
-
-## Development environment
-
-- LLVM clangd  
-- VSCode + Clangd Plugin  
-- Android NDK  
-- CMake  
-
-## See also
-
-https://github.com/topjohnwu/zygisk-module-sample
+- LSPlant / LSPosed 项目
+- 原 Xposed 实现（BytesHook.kt 等）

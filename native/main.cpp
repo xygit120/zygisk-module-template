@@ -1,5 +1,6 @@
-/* Bootloader Spoofer - Zygisk + LSPlant
- * 通过 hook Certificate.getExtensionValue 实现 Root of Trust patch
+/* Bootloader Spoofer - Zygisk + LSPlant + Dobby (最终完整版)
+ *
+ * 已集成 Dobby 作为 inline hooker
  */
 
 #include <jni.h>
@@ -10,25 +11,32 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+
+#ifdef HAS_DOBBY
+#include <dobby.h>
+#endif
 
 #define LOG_TAG "BootloaderSpoofer"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 
 using namespace zygisk;
 
 // ==================== 配置 ====================
 static constexpr bool kTargetedOnly = true;
+static const char* kHookerDexName = "hooker.dex";
 
 static const std::vector<std::string> kTargetPackages = {
-    "com.google.android.gms",                    // Play Services（强烈推荐）
-    "io.github.vvb2060.keyattestation",          // Key Attestation 测试 App
+    "com.google.android.gms",
+    "io.github.vvb2060.keyattestation",
 };
 
-// ==================== LSPlant Hook 实现 ====================
-
-static jbyteArray (*original_getExtensionValue)(JNIEnv*, jobject, jstring) = nullptr;
-
+// ==================== Patch 工具函数 ====================
 static std::vector<uint8_t> jbyteArrayToVector(JNIEnv* env, jbyteArray array) {
     if (!array) return {};
     jsize len = env->GetArrayLength(array);
@@ -50,104 +58,154 @@ static size_t findSubArray(const std::vector<uint8_t>& haystack, const std::vect
     return std::distance(haystack.begin(), it);
 }
 
-// 核心 patch 逻辑（移植自原 Kotlin BytesHook）
+// ==================== 核心 Patch 逻辑 ====================
 static bool patchAttestation(std::vector<uint8_t>& bytes) {
-    // 简化但可工作的实现：修改 deviceLocked 和 verifiedBootState
+    bool patched = false;
+
     std::vector<uint8_t> deviceLockedFalse = {0x01, 0x01, 0x00};
-    std::vector<uint8_t> verifiedBootVerified = {0x0A, 0x01, 0x00};
-
-    // 查找并修改 deviceLocked (false -> true)
-    size_t posFalse = findSubArray(bytes, deviceLockedFalse);
-    if (posFalse != std::string::npos) {
-        bytes[posFalse + 2] = 0xFF;   // 修改值为 0xFF (true)
-        LOGI("Patched deviceLocked to true (0xFF)");
-    } else {
-        LOGI("deviceLocked already true or not found");
+    size_t pos = findSubArray(bytes, deviceLockedFalse);
+    if (pos != std::string::npos) {
+        bytes[pos + 2] = 0x01;
+        LOGI("Patched deviceLocked → true");
+        patched = true;
     }
 
-    // 查找并修改 verifiedBootState 为 Verified (0)
-    // 这里简化处理，实际项目中建议更精确的 RootOfTrust 定位
-    size_t posVerified = findSubArray(bytes, verifiedBootVerified);
-    if (posVerified != std::string::npos) {
-        LOGI("verifiedBootState already Verified");
+    std::vector<std::vector<uint8_t>> badStates = {{0x0A, 0x01, 0x01}, {0x0A, 0x01, 0x02}, {0x0A, 0x01, 0x03}};
+    for (const auto& p : badStates) {
+        size_t posV = findSubArray(bytes, p);
+        if (posV != std::string::npos) {
+            bytes[posV + 2] = 0x00;
+            LOGI("Patched verifiedBootState → Verified");
+            patched = true;
+            break;
+        }
+    }
+    return patched;
+}
+
+// ==================== JNI nativePatch ====================
+static jbyteArray nativePatch(JNIEnv* env, jclass, jbyteArray input) {
+    if (!input) return nullptr;
+    auto bytes = jbyteArrayToVector(env, input);
+    if (patchAttestation(bytes)) {
+        return vectorToJbyteArray(env, bytes);
+    }
+    return input;
+}
+
+// ==================== 加载 hooker.dex ====================
+static bool loadHookerDex(JNIEnv* env, Api* api) {
+    int moduleDir = api->getModuleDir();
+    if (moduleDir < 0) {
+        LOGE("无法获取模块目录");
+        return false;
     }
 
+    int fd = openat(moduleDir, kHookerDexName, O_RDONLY);
+    if (fd < 0) {
+        fd = openat(moduleDir, (std::string("assets/") + kHookerDexName).c_str(), O_RDONLY);
+    }
+    if (fd < 0) {
+        LOGE("找不到 %s", kHookerDexName);
+        return false;
+    }
+
+    struct stat st{};
+    if (fstat(fd, &st) != 0 || st.st_size <= 0) {
+        close(fd);
+        return false;
+    }
+
+    std::vector<uint8_t> dexData(st.st_size);
+    ssize_t readSize = read(fd, dexData.data(), dexData.size());
+    close(fd);
+
+    if (readSize != (ssize_t)dexData.size()) return false;
+
+    LOGI("成功读取 hooker.dex (%zu bytes)", dexData.size());
+
+    jclass loaderClass = env->FindClass("dalvik/system/InMemoryDexClassLoader");
+    if (!loaderClass) return false;
+
+    jbyteArray dexArray = env->NewByteArray(dexData.size());
+    env->SetByteArrayRegion(dexArray, 0, dexData.size(), reinterpret_cast<const jbyte*>(dexData.data()));
+
+    jmethodID ctor = env->GetMethodID(loaderClass, "<init>", "([B)Ljava/lang/ClassLoader;");
+    jobject classLoader = env->NewObject(loaderClass, ctor, dexArray);
+    if (!classLoader) {
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+        return false;
+    }
+
+    jclass threadClass = env->FindClass("java/lang/Thread");
+    jmethodID currentThread = env->GetStaticMethodID(threadClass, "currentThread", "()Ljava/lang/Thread;");
+    jobject thread = env->CallStaticObjectMethod(threadClass, currentThread);
+    jmethodID setContext = env->GetMethodID(threadClass, "setContextClassLoader", "(Ljava/lang/ClassLoader;)V");
+    env->CallVoidMethod(thread, setContext, classLoader);
+
+    jmethodID loadClass = env->GetMethodID(env->FindClass("java/lang/ClassLoader"), "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+    jstring className = env->NewStringUTF("com.example.hook.AttestationHooker");
+    jclass hookerClass = (jclass)env->CallObjectMethod(classLoader, loadClass, className);
+
+    if (!hookerClass) {
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+        return false;
+    }
+
+    JNINativeMethod methods[] = {{"nativePatch", "([B)[B", (void*)nativePatch}};
+    env->RegisterNatives(hookerClass, methods, 1);
+
+    LOGI("hooker.dex 加载成功");
     return true;
 }
 
-static jbyteArray hooked_getExtensionValue(JNIEnv* env, jobject thiz, jstring oid) {
-    jbyteArray originalBytes = original_getExtensionValue(env, thiz, oid);
-    if (!originalBytes) return nullptr;
-
-    const char* oidStr = env->GetStringUTFChars(oid, nullptr);
-    if (!oidStr) return originalBytes;
-
-    if (strcmp(oidStr, "1.3.6.1.4.1.11129.2.1.17") == 0) {
-        LOGI("Intercepted Key Attestation extension, applying patch...");
-
-        auto bytes = jbyteArrayToVector(env, originalBytes);
-
-        if (patchAttestation(bytes)) {
-            jbyteArray patchedArray = vectorToJbyteArray(env, bytes);
-            env->ReleaseStringUTFChars(oid, oidStr);
-            if (patchedArray) {
-                LOGI("Attestation patched successfully");
-                return patchedArray;
-            }
-        }
-
-        env->ReleaseStringUTFChars(oid, oidStr);
-        return originalBytes;
-    }
-
-    env->ReleaseStringUTFChars(oid, oidStr);
-    return originalBytes;
-}
-
+// ==================== Module 主逻辑 ====================
 class BootloaderSpoofer : public ModuleBase {
 public:
     void onLoad(Api *api, JNIEnv *env) override {
         this->api = api;
         this->env = env;
-        LOGI("BootloaderSpoofer module loaded");
+        LOGI("BootloaderSpoofer loaded (with Dobby)");
     }
 
     void preAppSpecialize(AppSpecializeArgs *args) override {
         if (kTargetedOnly && args->nice_name) {
-            std::string pkg = env->GetStringUTFChars(args->nice_name, nullptr);
-            bool shouldHook = false;
-            for (const auto& target : kTargetPackages) {
-                if (pkg.find(target) != std::string::npos) {
-                    shouldHook = true;
-                    break;
+            const char* pkg = env->GetStringUTFChars(args->nice_name, nullptr);
+            if (pkg) {
+                bool should = false;
+                for (const auto& t : kTargetPackages) {
+                    if (std::string(pkg).find(t) != std::string::npos) { should = true; break; }
                 }
+                if (!should) api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
+                env->ReleaseStringUTFChars(args->nice_name, pkg);
             }
-            if (!shouldHook) {
-                api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
-            }
-            env->ReleaseStringUTFChars(args->nice_name, pkg.c_str());
         }
     }
 
     void postAppSpecialize(const AppSpecializeArgs *args) override {
         if (kTargetedOnly) {
-            bool shouldInit = false;
+            bool should = false;
             if (args->nice_name) {
-                std::string pkg = env->GetStringUTFChars(args->nice_name, nullptr);
-                for (const auto& target : kTargetPackages) {
-                    if (pkg.find(target) != std::string::npos) {
-                        shouldInit = true;
-                        break;
+                const char* pkg = env->GetStringUTFChars(args->nice_name, nullptr);
+                if (pkg) {
+                    for (const auto& t : kTargetPackages) {
+                        if (std::string(pkg).find(t) != std::string::npos) { should = true; break; }
                     }
+                    env->ReleaseStringUTFChars(args->nice_name, pkg);
                 }
-                env->ReleaseStringUTFChars(args->nice_name, pkg.c_str());
             }
-            if (!shouldInit) return;
+            if (!should) return;
         }
 
-        // 初始化 LSPlant 并 hook
+        if (!loadHookerDex(env, api)) {
+            LOGE("加载 hooker.dex 失败");
+            return;
+        }
+
         if (initLSPlant()) {
-            hookCertificateGetExtensionValue();
+            doHook();
         }
     }
 
@@ -159,48 +217,76 @@ private:
     bool initLSPlant() {
         if (lsplant_initialized) return true;
 
-        // LSPlant 初始化（简化版，兼容大多数情况）
-        lsplant::InitInfo init_info{
-            .runtime_instance = nullptr,
-            .class_linker = nullptr,
+        lsplant::InitInfo info{};
+
+#ifdef HAS_DOBBY
+        info.inline_hooker = [](void *target, void *hooker) -> void * {
+            void *backup = nullptr;
+            if (DobbyHook(target, hooker, &backup) == 0) {
+                LOGI("DobbyHook 成功");
+                return backup;
+            }
+            LOGE("DobbyHook 失败");
+            return nullptr;
         };
 
-        if (!lsplant::Init(init_info)) {
-            LOGE("LSPlant initialization failed");
+        info.inline_unhooker = [](void *func) -> bool {
+            return DobbyDestroy(func) == 0;
+        };
+#else
+        info.inline_hooker = [](void*, void*) -> void* {
+            LOGE("Dobby 未集成！请 git clone Dobby 到 external/dobby");
+            return nullptr;
+        };
+        info.inline_unhooker = [](void*) -> bool { return false; };
+#endif
+
+        info.art_symbol_resolver = [](std::string_view name) -> void* {
+            static void* libart = nullptr;
+            if (!libart) libart = dlopen("libart.so", RTLD_NOW | RTLD_GLOBAL);
+            return libart ? dlsym(libart, std::string(name).c_str()) : nullptr;
+        };
+
+        if (!lsplant::Init(env, info)) {
+            LOGE("LSPlant Init 失败");
             return false;
         }
 
         lsplant_initialized = true;
-        LOGI("LSPlant initialized successfully");
+        LOGI("LSPlant + Dobby 初始化成功");
         return true;
     }
 
-    void hookCertificateGetExtensionValue() {
+    void doHook() {
+        jclass hookerClass = env->FindClass("com.example.hook.AttestationHooker");
+        if (!hookerClass) {
+            LOGE("找不到 AttestationHooker 类");
+            return;
+        }
+
+        jmethodID ctor = env->GetMethodID(hookerClass, "<init>", "()V");
+        jobject hookerObj = env->NewObject(hookerClass, ctor);
+        if (!hookerObj) return;
+
         jclass certClass = env->FindClass("java/security/cert/Certificate");
-        if (!certClass) {
-            LOGE("Failed to find Certificate class");
+        jmethodID targetMid = env->GetMethodID(certClass, "getExtensionValue", "(Ljava/lang/String;)[B");
+        if (!targetMid) return;
+
+        jmethodID callbackMid = env->GetMethodID(hookerClass, "callback", "([Ljava/lang/Object;)Ljava/lang/Object;");
+        jobject backup = lsplant::Hook(env, reinterpret_cast<jobject>(targetMid), hookerObj, reinterpret_cast<jobject>(callbackMid));
+
+        if (!backup) {
+            LOGE("LSPlant::Hook 失败");
             return;
         }
 
-        jmethodID originalMethod = env->GetMethodID(certClass, "getExtensionValue", "(Ljava/lang/String;)[B");
-        if (!originalMethod) {
-            LOGE("Failed to find getExtensionValue method");
-            return;
+        jobject reflectedBackup = env->ToReflectedMethod(certClass, (jmethodID)backup, JNI_FALSE);
+        if (reflectedBackup) {
+            jfieldID f = env->GetFieldID(hookerClass, "backupMethod", "Ljava/lang/reflect/Method;");
+            env->SetObjectField(hookerObj, f, reflectedBackup);
         }
 
-        // 使用 LSPlant hook
-        auto hookResult = lsplant::Hook(
-            env,
-            originalMethod,
-            reinterpret_cast<void*>(hooked_getExtensionValue),
-            reinterpret_cast<void**>(&original_getExtensionValue)
-        );
-
-        if (hookResult) {
-            LOGI("Successfully hooked Certificate.getExtensionValue");
-        } else {
-            LOGE("Failed to hook getExtensionValue");
-        }
+        LOGI("Hook 完成！Bootloader Spoofer 已激活");
     }
 };
 
