@@ -13,18 +13,16 @@
 
 using namespace zygisk;
 
-// ---------- 动态安全获取 JNIEnv 环境 ----------
+// ---------- 安全捕获 JNI 环境 ----------
 static JNIEnv* getSafeJNIEnv() {
     typedef jint (*JNI_GetCreatedJavaVMs_t)(JavaVM**, jsize, jsize*);
     void* handle = dlopen("libnativehelper.so", RTLD_LAZY);
     if (!handle) handle = RTLD_DEFAULT;
-
     auto* pfnGetVMs = (JNI_GetCreatedJavaVMs_t)dlsym(handle, "JNI_GetCreatedJavaVMs");
     if (!pfnGetVMs) {
         if (handle != RTLD_DEFAULT) dlclose(handle);
         return nullptr;
     }
-
     JavaVM* vm = nullptr;
     jsize vm_count = 0;
     if (pfnGetVMs(&vm, 1, &vm_count) != JNI_OK || vm_count == 0) {
@@ -32,7 +30,6 @@ static JNIEnv* getSafeJNIEnv() {
         return nullptr;
     }
     if (handle != RTLD_DEFAULT) dlclose(handle);
-
     JNIEnv* env = nullptr;
     if (vm->GetEnv((void**)&env, JNI_VERSION_1_6) == JNI_EDETACHED) {
         vm->AttachCurrentThread(&env, nullptr);
@@ -40,17 +37,12 @@ static JNIEnv* getSafeJNIEnv() {
     return env;
 }
 
-// ---------- 目标应用过滤控制 ----------
+// ---------- 目标过滤控制 ----------
 static std::vector<std::string> targetList;
-
 static bool isTargetApp(const char* pkg) {
     if (!pkg) return false;
     std::string p(pkg);
-
-    // 强行放行核心系统认证服务
-    if (p == "com.android.se" || p == "com.google.android.gms") {
-        return true; 
-    }
+    if (p == "com.android.se" || p == "com.google.android.gms") return true;
 
     if (targetList.empty()) {
         std::ifstream file("/data/adb/modules/ru.blays.bootloaderspoofer.shadowcpp/target.txt");
@@ -58,13 +50,11 @@ static bool isTargetApp(const char* pkg) {
             std::string line;
             while (std::getline(file, line)) {
                 line.erase(0, line.find_first_not_of(" \t"));
-                if (!line.empty() && line[0] != '#') {
-                    targetList.push_back(line);
-                }
+                if (!line.empty() && line[0] != '#') targetList.push_back(line);
             }
             file.close();
         } else {
-            return true; // 文件不存在时默认进行全局拦截
+            return true; // 默认全局拦截
         }
     }
     for (const auto& t : targetList) {
@@ -73,35 +63,63 @@ static bool isTargetApp(const char* pkg) {
     return false;
 }
 
-// ---------- 核心硬核篡改 ASN.1 证书树 ----------
-static bool patchAttestation(uint8_t* data, size_t len) {
-    if (len < 200) return false;
-    const uint8_t oid[] = {0x06, 0x0b, 0x2b, 0x06, 0x01, 0x04, 0x01, 0xd6, 0x79, 0x02, 0x01, 0x11};
+// ---------- 暴力搜索字节流工具 ----------
+static int findBytesIndex(const uint8_t* haystack, size_t haystack_len, const uint8_t* needle, size_t needle_len) {
+    if (haystack_len < needle_len) return -1;
+    for (size_t i = 0; i <= haystack_len - needle_len; ++i) {
+        if (memcmp(haystack + i, needle, needle_len) == 0) return i;
+    }
+    return -1;
+}
 
+// ---------- 核心解析与篡改 (100% 对齐原 Xposed 逻辑) ----------
+static bool patchAttestation(uint8_t* data, size_t len) {
+    // 1. 验证 Key Attestation 顶层扩展 OID (1.3.6.1.4.1.11129.2.1.17)
+    // ASN.1 DER 编码格式: 0x06 (Object Identifier), 0x0B (长度 11)
+    const uint8_t attestation_oid[] = {0x06, 0x0b, 0x2b, 0x06, 0x01, 0x04, 0x01, 0xd6, 0x79, 0x02, 0x01, 0x11};
+    if (findBytesIndex(data, len, attestation_oid, sizeof(attestation_oid)) == -1) {
+        return false; 
+    }
+
+    // 2. 定位 RootOfTrust 结构体特征
+    // 根据原代码中 ASN1TaggedObject 标签 704 定位 (ASN.1 编码一般以形如 0xBF, 0x85, 0x40 或类似的高位复合标签开头)
+    // 我们直接寻找 rootOfTrust 内部特征：verifiedBootState 紧跟在 deviceLocked 后面。
+    // deviceLocked 为 ASN1Boolean: 0x01, 0x01, 0x00 (假) 或 0x01, 0x01, 0x01 (真)
+    // verifiedBootState 为 ASN1Enumerated: 0x0A, 0x01, 0x01 (解锁/自签名) 
+    
     bool patched = false;
-    for (size_t i = 0; i < len - sizeof(oid); ++i) {
-        if (memcmp(data + i, oid, sizeof(oid)) == 0) {
-            for (size_t j = i + 30; j < len - 8; ++j) {
-                // 1. 强制将 deviceLocked 伪造为闭锁状态 (0x01 0x01 0x01)
-                if (data[j] == 0x01 && data[j+1] == 0x01 && data[j+2] == 0x00) {
-                    data[j+2] = 0x01;
-                    patched = true;
-                    LOGI("🔒 Successfully forced deviceLocked -> true");
-                }
-                // 2. 强制将 verifiedBootState 伪造为 VERIFIED 安全认证 (0x0A 0x01 0x00)
-                if (data[j] == 0x0A && data[j+1] == 0x01 && data[j+2] == 0x01) {
-                    data[j+2] = 0x00;
-                    patched = true;
-                    LOGI("🛡️ Successfully forced verifiedBootState -> VERIFIED");
-                }
+    for (size_t i = 0; i < len - 8; ++i) {
+        // 匹配未锁定的典型特征组合：
+        // data[i] -> 0x01 (BOOLEAN 标签)
+        // data[i+1] -> 0x01 (长度 1)
+        // data[i+2] -> 0x00 (false, 代表没锁)
+        // data[i+3] -> 0x0A (ENUMERATED 标签)
+        // data[i+4] -> 0x01 (长度 1)
+        // data[i+5] -> 0x01 或 0x02 或 0x03 (代表 UNVERIFIED / SELF_SIGNED)
+        if (data[i] == 0x01 && data[i+1] == 0x01 && data[i+3] == 0x0A && data[i+4] == 0x01) {
+            
+            // 精准对齐原本 Xposed 逻辑中的两行赋值：
+            // 1. deviceLocked 设为 1 (true)
+            if (data[i+2] == 0x00) {
+                data[i+2] = 0x01;
+                LOGI("🔒 [RootOfTrust] forced deviceLocked -> true");
+                patched = true;
             }
-            break;
+            
+            // 2. verifiedBootState 设为 0 (VERIFIED)
+            if (data[i+5] != 0x00) {
+                data[i+5] = 0x00;
+                LOGI("🛡️ [RootOfTrust] forced verifiedBootState -> VERIFIED");
+                patched = true;
+            }
+            
+            if (patched) break;
         }
     }
     return patched;
 }
 
-// ---------- ShadowHook 挂钩配置 ----------
+// ---------- ShadowHook 回调 ----------
 struct ASN1_OCTET_STRING {
     int length;
     int type;
@@ -124,33 +142,25 @@ static void doNativeHook() {
     static bool hooked = false;
     if (hooked) return;
 
-    if (shadowhook_init(SHADOWHOOK_MODE_UNIQUE, false) != 0) {
-        LOGI("ShadowHook initialization failed");
-        return;
-    }
+    if (shadowhook_init(SHADOWHOOK_MODE_UNIQUE, false) != 0) return;
 
-    // 针对常规和系统 APEX 沙盒内的 libcrypto.so 实施动态挂钩
     void* stub = shadowhook_hook_sym_name("libcrypto.so", "X509_get_ext_d2i", (void*)hooked_X509_get_ext_d2i, (void**)&orig_X509_get_ext_d2i);
     if (!stub) {
         stub = shadowhook_hook_sym_name("/apex/com.android.runtime/lib64/bionic/libcrypto.so", "X509_get_ext_d2i", (void*)hooked_X509_get_ext_d2i, (void**)&orig_X509_get_ext_d2i);
     }
-
     if (stub != nullptr) {
         LOGI("🚀 Native Hook applied successfully into libcrypto.so");
         hooked = true;
     }
 }
 
-// ---------- Zygisk 框架对接接口 ----------
+// ---------- Zygisk 接口包装 ----------
 class BootloaderSpoofer : public ModuleBase {
 public:
-    void onLoad(Api *api, JNIEnv *env) override {
-        // 在此处存储全局 api 句柄或初始化
-    }
+    void onLoad(Api *api, JNIEnv *env) override {}
 
     void preAppSpecialize(AppSpecializeArgs *args) override {
         if (!args || !args->nice_name) return;
-
         JNIEnv* env = getSafeJNIEnv();
         if (!env) return;
 
@@ -160,15 +170,18 @@ public:
         bool matched = isTargetApp(process_name);
         env->ReleaseStringUTFChars(args->nice_name, process_name);
 
-        if (matched) {
-            doNativeHook();
-        }
+        if (matched) doNativeHook();
     }
 
     void preServerSpecialize(ServerSpecializeArgs *args) override {
-        // 系统核心进程必须无条件注入，防止被证书框架绕过
         doNativeHook();
     }
 };
 
+class BootloaderSpooferCompanion : public CompanionBase {
+public:
+    void onConnection(int socket) override {}
+};
+
 REGISTER_ZYGISK_MODULE(BootloaderSpoofer)
+REGISTER_ZYGISK_COMPANION(BootloaderSpooferCompanion)
