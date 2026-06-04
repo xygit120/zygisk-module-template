@@ -15,7 +15,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ==================== 自动克隆依赖 ====================
+      # ==================== 自动克隆依赖并强制降级 C++ 标准 ====================
       - name: Clone Dobby
         working-directory: native
         run: |
@@ -29,13 +29,15 @@ jobs:
           git clone https://github.com/LSPosed/LSPlant.git external/lsplant --depth 1
           cd external/lsplant
           git submodule update --init --recursive --depth 1 lsplant/src/main/jni/external/dex_builder
+          
+          # 核心修复 1：将克隆下来的 LSPlant 内部 CMakeLists.txt 的 C++23/2b 强行降级为稳定的 C++20
+          find . -name "CMakeLists.txt" -exec sed -i 's/CMAKE_CXX_STANDARD 23/CMAKE_CXX_STANDARD 20/g' {} +
+          find . -name "CMakeLists.txt" -exec sed -i 's/CMAKE_CXX_STANDARD 2b/CMAKE_CXX_STANDARD 20/g' {} +
       # ============================================================
 
-      # 删除了所有杂乱的 clang-tools 安装，只保留纯净的 ninja-build
       - name: Install Ninja (for C++ Modules support)
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
-      # 核心变动：直接升级到自带 C++20 模块全家桶工具链的 NDK r27
       - name: Setup Android NDK r27
         uses: nttld/setup-ndk@v1
         id: setup-ndk
@@ -43,17 +45,17 @@ jobs:
           ndk-version: r27
           add-to-path: true
 
-      - name: Configure and Build with CMake (Ninja + Auto C++ Modules)
+      - name: Configure and Build with CMake (Ninja + Stable C++20)
         working-directory: native
         run: |
           rm -rf build
           mkdir -p build
           
-          # 删除了硬编码的 CMAKE_CXX_COMPILER_CLANG_SCAN_DEPS 路径
-          # CMake 会在 NDK r27 内部自动搜寻并配对最完美的依赖扫描器
+          # 核心修复 2：在全局构建参数中同样锁定 CMAKE_CXX_STANDARD 为 20
           cmake -B build \
             -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
+            -DCMAKE_CXX_STANDARD=20 \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-26 \
             -DCMAKE_BUILD_TYPE=Release
