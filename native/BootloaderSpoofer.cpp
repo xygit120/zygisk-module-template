@@ -5,41 +5,37 @@
 #include <fstream>
 #include <vector>
 #include "zygisk.hpp"
-#include <shadowhook.h>
+#include "shadowhook.h"
 
 #define LOG_TAG "BootloaderSpoofer"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 using namespace zygisk;
 
-static std::vector<std::string> targetApps;
+static std::vector<std::string> targetList;
 
-static bool shouldHook(const char* packageName) {
-    if (targetApps.empty()) {
+static bool isTargetApp(const char* pkg) {
+    if (targetList.empty()) {
         // 读取 target.txt
         std::ifstream file("/data/adb/modules/ru.blays.bootloaderspoofer.shadowcpp/target.txt");
         if (file.is_open()) {
             std::string line;
             while (std::getline(file, line)) {
-                // 去掉空格和注释
                 line.erase(0, line.find_first_not_of(" \t"));
                 if (!line.empty() && line[0] != '#') {
-                    targetApps.push_back(line);
+                    targetList.push_back(line);
                 }
             }
             file.close();
         } else {
-            LOGI("target.txt not found, will hook all apps (testing mode)");
-            return true; // 文件不存在时默认 hook 所有
+            LOGI("target.txt not found, hooking ALL apps (test mode)");
+            return true;
         }
     }
 
-    std::string pkg(packageName);
-    for (const auto& target : targetApps) {
-        if (pkg == target) {
-            return true;
-        }
+    std::string p(pkg);
+    for (const auto& t : targetList) {
+        if (p == t) return true;
     }
     return false;
 }
@@ -75,11 +71,11 @@ static jobject hooked_getExtensionValue(JNIEnv* env, jobject thiz, jstring oid) 
 
     const char* oidStr = env->GetStringUTFChars(oid, nullptr);
     if (strcmp(oidStr, "1.3.6.1.4.1.11129.2.1.17") == 0) {
-        jbyteArray arr = reinterpret_cast<jbyteArray>(result);
+        jbyteArray arr = (jbyteArray)result;
         jsize length = env->GetArrayLength(arr);
         jbyte* bytes = env->GetByteArrayElements(arr, nullptr);
 
-        if (patchAttestation(reinterpret_cast<uint8_t*>(bytes), length)) {
+        if (patchAttestation((uint8_t*)bytes, length)) {
             jbyteArray newArr = env->NewByteArray(length);
             env->SetByteArrayRegion(newArr, 0, length, bytes);
             env->ReleaseByteArrayElements(arr, bytes, JNI_ABORT);
@@ -92,17 +88,20 @@ static jobject hooked_getExtensionValue(JNIEnv* env, jobject thiz, jstring oid) 
     return result;
 }
 
-class BootloaderSpoofer : public ZygiskModule {
+class BootloaderSpoofer : public ModuleBase {
 public:
-    void onLoad() override {
-        LOGI("BootloaderSpoofer Native module loaded");
+    void onLoad(Api *api, JNIEnv *env) override {
+        LOGI("BootloaderSpoofer loaded");
     }
 
-    void preAppSpecialize(AppSpecializeArgs* args) override {
+    void preAppSpecialize(AppSpecializeArgs *args) override {
         if (args == nullptr || args->niceName == nullptr) return;
 
-        if (shouldHook(args->niceName)) {
-            LOGI("Hooking target app: %s", args->niceName);
+        std::string pkg = args->niceName;
+        LOGI("App: %s", pkg.c_str());
+
+        if (isTargetApp(pkg.c_str())) {
+            LOGI("【Target App】Enabling hooks: %s", pkg.c_str());
 
             shadowhook_init(SHADOWHOOK_MODE_UNIQUE, false);
 
