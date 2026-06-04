@@ -44,8 +44,7 @@ static std::vector<std::string> targetList;
 static bool isTargetApp(const char* pkg) {
     if (!pkg) return false;
     std::string p(pkg);
-    // 强制放行系统关键认证相关组件
-    if (p == "com.android.se" || p == "com.google.android.gms") return true;
+    if (p == "com.android.se" || p == "com.google.android.gms" || p == "io.github.vvb2060.keyattestation") return true;
 
     if (targetList.empty()) {
         std::ifstream file("/data/adb/modules/ru.blays.bootloaderspoofer.shadowcpp/target.txt");
@@ -57,7 +56,7 @@ static bool isTargetApp(const char* pkg) {
             }
             file.close();
         } else {
-            return true; // 默认全局拦截（若 target.txt 不存在或为空）
+            return true; // 默认全局拦截
         }
     }
     for (const auto& t : targetList) {
@@ -66,117 +65,96 @@ static bool isTargetApp(const char* pkg) {
     return false;
 }
 
-// ---------- 暴力搜索字节流工具 ----------
-static int findBytesIndex(const uint8_t* haystack, size_t haystack_len, const uint8_t* needle, size_t needle_len) {
-    if (haystack_len < needle_len) return -1;
-    for (size_t i = 0; i <= haystack_len - needle_len; ++i) {
-        if (memcmp(haystack + i, needle, needle_len) == 0) return i;
-    }
-    return -1;
-}
-
-// ---------- 辅助工具：将字节数组转为 Hex 字符串（限制最大打印长度） ----------
-static std::string toHex(const uint8_t* buf, size_t len, size_t max_len = 128) {
-    const char hex_chars[] = "0123456789ABCDEF";
-    std::string str;
-    size_t parse_len = (len > max_len) ? max_len : len;
-    for (size_t i = 0; i < parse_len; ++i) {
-        str.push_back(hex_chars[(buf[i] >> 4) & 0x0F]);
-        str.push_back(hex_chars[buf[i] & 0x0F]);
-        str.push_back(' ');
-    }
-    if (len > max_len) str += "...";
-    return str;
-}
-
-// ---------- 核心解析、Dump 与篡改 (对齐原 Xposed 逻辑) ----------
-static bool patchAttestation(uint8_t* data, size_t len) {
-    // 日志埋点 1：打印每次进入该函数的原始大小
-    LOGI("🔍 [Dump] Entered patchAttestation with data length: %zu", len);
-
-    // 日志埋点 2：打印前 64 个字节的 Hex 头部，直观确认是否为标准 ASN.1 序列
-    LOGI("🔍 [Dump] Data Head (First 64B): %s", toHex(data, len, 64).c_str());
-
-    // 验证 Key Attestation 顶层扩展 OID (1.3.6.1.4.1.11129.2.1.17)
-    const uint8_t attestation_oid[] = {0x06, 0x0b, 0x2b, 0x06, 0x01, 0x04, 0x01, 0xd6, 0x79, 0x02, 0x01, 0x11};
-    int oid_index = findBytesIndex(data, len, attestation_oid, sizeof(attestation_oid));
-    
-    if (oid_index == -1) {
-        return false; 
-    }
-
-    // 日志埋点 3：定位到 Key Attestation 数据，打印 OID 后面 128 字节的内容
-    LOGI("🎯 [Dump] Found Key Attestation OID at index: %d", oid_index);
-    LOGI("🔍 [Dump] Data after OID (128B): %s", toHex(data + oid_index, len - oid_index, 128).c_str());
-    
+// ---------- 核心爆破：直接对 byte[] 内存段执行暴力强改 ----------
+static bool patchRawBuffer(uint8_t* data, size_t len) {
     bool patched = false;
-    for (size_t i = 0; i < len - 8; ++i) {
-        // 匹配特征：deviceLocked(BOOLEAN) 紧邻 verifiedBootState(ENUMERATED)
+    if (len < 6) return false;
+
+    for (size_t i = 0; i < len - 5; ++i) {
+        // 100% 对齐 Kotlin 特征扫描：找 deviceLocked (0x01 0x01 XX) 紧邻 verifiedBootState (0x0A 0x01 XX)
         if (data[i] == 0x01 && data[i+1] == 0x01 && data[i+3] == 0x0A && data[i+4] == 0x01) {
-            
-            LOGI("✨ [Dump] Matched RootOfTrust pattern at index: %zu", i);
-            LOGI("✨ [Dump] Before Patch -> deviceLocked: %02X, verifiedBootState: %02X", data[i+2], data[i+5]);
-            
+            LOGI("🎯 [Native] 捕获到 RootOfTrust 内存特征流，偏移位置: %zu", i);
+            LOGI("🔍 [Native] 篡改前 -> deviceLocked: %02X, verifiedBootState: %02X", data[i+2], data[i+5]);
+
             // 1. deviceLocked -> true (0x01)
             if (data[i+2] == 0x00) {
                 data[i+2] = 0x01;
-                LOGI("🔒 [RootOfTrust] forced deviceLocked -> true");
                 patched = true;
             }
-            
             // 2. verifiedBootState -> VERIFIED (0x00)
             if (data[i+5] != 0x00) {
                 data[i+5] = 0x00;
-                LOGI("🛡️ [RootOfTrust] forced verifiedBootState -> VERIFIED");
                 patched = true;
             }
-            
-            if (patched) break;
-        }
-    }
 
-    if (!patched) {
-        LOGI("⚠️ [Dump] Failed to match RootOfTrust pattern in this block.");
+            if (patched) {
+                LOGI("🎉 [Native] 篡改成功！已强刷为 🔒Locked(01) + 🛡️VERIFIED(00)");
+                break;
+            }
+        }
     }
     return patched;
 }
 
-// ---------- ShadowHook 回调 ----------
+// ---------- 拦截层 1：挂钩原始 X509_get_ext_d2i ----------
 struct ASN1_OCTET_STRING {
     int length;
     int type;
     unsigned char *data;
     long flags;
 };
-
 typedef ASN1_OCTET_STRING* (*X509_get_ext_d2i_t)(void*, int, int*, int*);
 static X509_get_ext_d2i_t orig_X509_get_ext_d2i = nullptr;
 
 static ASN1_OCTET_STRING* hooked_X509_get_ext_d2i(void* x, int nid, int* crit, int* idx) {
     ASN1_OCTET_STRING* res = orig_X509_get_ext_d2i(x, nid, crit, idx);
     if (res != nullptr && res->data != nullptr && res->length > 0) {
-        patchAttestation(res->data, res->length);
+        patchRawBuffer(res->data, res->length);
     }
     return res;
 }
 
+// ---------- 拦截层 2：兜底大网，直接挂钩 BoringSSL 的底层 ASN1_item_d2i ----------
+// 无论 Java 层通过什么偏门函数解析任何证书段，最终在 C++ 层反序列化生成 ASN.1 结构时，必过此路
+typedef void* (*ASN1_item_d2i_t)(void**, const unsigned char**, long, const void*);
+static ASN1_item_d2i_t orig_ASN1_item_d2i = nullptr;
+
+static void* hooked_ASN1_item_d2i(void** val, const unsigned char** in, long len, const void* it) {
+    // 因为 in 指针在解析时会被修改，我们先拷贝它的初始地址
+    const unsigned char* p_in = *in;
+    void* res = orig_ASN1_item_d2i(val, in, len, it);
+    
+    // 如果解析成功，直接在刚刚读过的原始输入缓冲区里就地扫描并强改
+    if (res != nullptr && p_in != nullptr && len > 0) {
+        // 由于这里拦截的是全系统所有的 ASN.1 解析，我们需要无条件快速扫描特征码
+        patchRawBuffer(const_cast<uint8_t*>(p_in), static_cast<size_t>(len));
+    }
+    return res;
+}
+
+// ---------- 执行多点防御挂钩 ----------
 static void doNativeHook() {
     static bool hooked = false;
     if (hooked) return;
 
     if (shadowhook_init(SHADOWHOOK_MODE_UNIQUE, false) != 0) return;
 
-    void* stub = shadowhook_hook_sym_name("libcrypto.so", "X509_get_ext_d2i", (void*)hooked_X509_get_ext_d2i, (void**)&orig_X509_get_ext_d2i);
+    // 1. 尝试挂钩顶层封装
+    shadowhook_hook_sym_name("libcrypto.so", "X509_get_ext_d2i", (void*)hooked_X509_get_ext_d2i, (void**)&orig_X509_get_ext_d2i);
+    
+    // 2. 强行挂钩必经之路（兜底大网）
+    void* stub = shadowhook_hook_sym_name("libcrypto.so", "ASN1_item_d2i", (void*)hooked_ASN1_item_d2i, (void**)&orig_ASN1_item_d2i);
     if (!stub) {
-        stub = shadowhook_hook_sym_name("/apex/com.android.runtime/lib64/bionic/libcrypto.so", "X509_get_ext_d2i", (void*)hooked_X509_get_ext_d2i, (void**)&orig_X509_get_ext_d2i);
+        stub = shadowhook_hook_sym_name("/apex/com.android.runtime/lib64/bionic/libcrypto.so", "ASN1_item_d2i", (void*)hooked_ASN1_item_d2i, (void**)&orig_ASN1_item_d2i);
     }
+
     if (stub != nullptr) {
-        LOGI("🚀 Native Hook applied successfully into libcrypto.so");
+        LOGI("🚀 Native 全局 ASN1 通道双重拦截网络构建成功！");
         hooked = true;
     }
 }
 
-// ---------- Zygisk 接口包装 ----------
+// ---------- Zygisk 核心入口 ----------
 class BootloaderSpoofer : public zygisk::ModuleBase {
 public:
     void onLoad(Api *api, JNIEnv *env) override {}
@@ -200,5 +178,4 @@ public:
     }
 };
 
-// 使用向下兼容的单模块注册宏（剔除了导致编译冲突的 Companion 注册宏）
 REGISTER_ZYGISK_MODULE(BootloaderSpoofer)
