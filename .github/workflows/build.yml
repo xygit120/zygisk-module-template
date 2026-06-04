@@ -15,7 +15,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ==================== 自动克隆依赖并强制降级 C++ 标准 ====================
+      # ==================== 自动克隆依赖 ====================
       - name: Clone Dobby
         working-directory: native
         run: |
@@ -29,38 +29,47 @@ jobs:
           git clone https://github.com/LSPosed/LSPlant.git external/lsplant --depth 1
           cd external/lsplant
           git submodule update --init --recursive --depth 1 lsplant/src/main/jni/external/dex_builder
-          
-          # 核心修复 1：将克隆下来的 LSPlant 内部 CMakeLists.txt 的 C++23/2b 强行降级为稳定的 C++20
-          find . -name "CMakeLists.txt" -exec sed -i 's/CMAKE_CXX_STANDARD 23/CMAKE_CXX_STANDARD 20/g' {} +
-          find . -name "CMakeLists.txt" -exec sed -i 's/CMAKE_CXX_STANDARD 2b/CMAKE_CXX_STANDARD 20/g' {} +
       # ============================================================
 
-      - name: Install Ninja (for C++ Modules support)
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Install Ninja & Host Clang Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang-tools llvm
 
-      - name: Setup Android NDK r27
+      # 回退到兼容 LSPlant 语法的 r26d
+      - name: Setup Android NDK r26d
         uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
-          ndk-version: r27
+          ndk-version: r26d
           add-to-path: true
 
-      - name: Configure and Build with CMake (Ninja + Stable C++20)
+      # 核心魔法：将主机的 clang-scan-deps 软链接到 NDK r26d 目录中，白嫖扫描器
+      - name: Inject clang-scan-deps into NDK r26d
+        run: |
+          SCAN_DEPS_PATH=$(which clang-scan-deps || which clang-scan-deps-15 || which clang-scan-deps-16 || which clang-scan-deps-17 || which clang-scan-deps-18)
+          echo "Found host clang-scan-deps at: $SCAN_DEPS_PATH"
+          
+          NDK_BIN_DIR="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "NDK Bin Directory: $NDK_BIN_DIR"
+          
+          ln -sf "$SCAN_DEPS_PATH" "$NDK_BIN_DIR/clang-scan-deps"
+          ls -l "$NDK_BIN_DIR/clang-scan-deps"
+
+      - name: Configure and Build with CMake (Ninja + NDK r26d)
         working-directory: native
         run: |
           rm -rf build
           mkdir -p build
           
-          # 核心修复 2：在全局构建参数中同样锁定 CMAKE_CXX_STANDARD 为 20
           cmake -B build \
             -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
-            -DCMAKE_CXX_STANDARD=20 \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-26 \
             -DCMAKE_BUILD_TYPE=Release
 
-          cmake --build build --config Release -- -j1
+          cmake --build build --config Release
 
       - name: Prepare Magisk Module
         run: |
