@@ -12,15 +12,26 @@ add_library(bootloader_spoofer SHARED
     jni/zygisk_main.cpp
 )
 
-# ==================== LSPlant 正确头文件路径 ====================
-set(LSPLANT_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/external/lsplant/lsplant/src/main/jni)
+# ==================== LSPlant 配置 ====================
+find_path(LSPLANT_INCLUDE_DIR
+    NAMES lsplant.hpp
+    PATHS 
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/lsplant/lsplant/src/main/jni/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/lsplant/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/lsplant
+    NO_DEFAULT_PATH
+)
 
-if(EXISTS ${LSPLANT_ROOT}/include/lsplant.hpp)
-    message(STATUS "Found LSPlant headers at: ${LSPLANT_ROOT}/include")
-    include_directories(${LSPLANT_ROOT}/include)
-    include_directories(${LSPLANT_ROOT})   # 有些模块文件可能需要
+if(LSPLANT_INCLUDE_DIR)
+    message(STATUS "✅ Found LSPlant headers at: ${LSPLANT_INCLUDE_DIR}")
+    include_directories(${LSPLANT_INCLUDE_DIR})
 else()
-    message(FATAL_ERROR "lsplant.hpp not found! Please check LSPlant structure.")
+    message(STATUS "❌ lsplant.hpp not found. Dumping directory structure for debug...")
+    execute_process(
+        COMMAND find ${CMAKE_CURRENT_SOURCE_DIR}/external/lsplant -type f -name "*.hpp" | head -20
+        OUTPUT_VARIABLE LSPLANT_HEADERS
+    )
+    message(FATAL_ERROR "lsplant.hpp not found!\nHeaders found:\n${LSPLANT_HEADERS}")
 endif()
 
 target_link_libraries(bootloader_spoofer
@@ -28,5 +39,5 @@ target_link_libraries(bootloader_spoofer
 )
 
 set_target_properties(bootloader_spoofer PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/zygisk/${ANDROID_ABI}
+    LIBRARY_OUTPUT_DIRECTORY \( {CMAKE_CURRENT_SOURCE_DIR}/zygisk/ \){ANDROID_ABI}
 )
