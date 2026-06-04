@@ -165,14 +165,6 @@ public:
     }
 };
 
-// 适配旧版本 zygisk.hpp 基类名称: CompanionHandler
-class BootloaderSpooferCompanion : public zygisk::CompanionHandler {
-public:
-    void onConnection(int socket) override {
-        // 留空即可
-    }
-};
-
-// 完美的兼容双重注册
+// 仅仅使用这单一个经典宏注册核心。
+// 老版本头文件会通过这个宏直接完整导出接口，不再产生 client 符号重新定义的致命冲突。
 REGISTER_ZYGISK_MODULE(BootloaderSpoofer)
-REGISTER_ZYGISK_COMPANION(BootloaderSpooferCompanion)
