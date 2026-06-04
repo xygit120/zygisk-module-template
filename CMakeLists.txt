@@ -13,31 +13,10 @@ add_library(bootloader_spoofer SHARED
 )
 
 # ==================== LSPlant 配置 ====================
-find_path(LSPLANT_INCLUDE_DIR
-    NAMES lsplant.hpp
-    PATHS 
-        ${CMAKE_CURRENT_SOURCE_DIR}/external/lsplant/lsplant/src/main/jni/include
-        ${CMAKE_CURRENT_SOURCE_DIR}/external/lsplant/include
-        ${CMAKE_CURRENT_SOURCE_DIR}/external/lsplant
-        ${CMAKE_CURRENT_SOURCE_DIR}                    # 支持手动复制到根目录
-    NO_DEFAULT_PATH
-)
+# 你已经把 lsplant.hpp 放在项目根目录，直接 include 当前目录即可
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
-if(LSPLANT_INCLUDE_DIR)
-    message(STATUS "✅ Found LSPlant headers at: ${LSPLANT_INCLUDE_DIR}")
-    include_directories(${LSPLANT_INCLUDE_DIR})
-else()
-    message(STATUS "❌ lsplant.hpp not found in standard paths. Checking external/lsplant and project root...")
-    execute_process(
-        COMMAND find ${CMAKE_CURRENT_SOURCE_DIR}/external/lsplant -name lsplant.hpp
-        OUTPUT_VARIABLE LSPLANT_HEADERS
-    )
-    execute_process(
-        COMMAND find ${CMAKE_CURRENT_SOURCE_DIR} -maxdepth 3 -name lsplant.hpp
-        OUTPUT_VARIABLE ROOT_HEADERS
-    )
-    message(FATAL_ERROR "lsplant.hpp not found!\n\nIn external/lsplant:\n\( {LSPLANT_HEADERS}\n\nIn project (maxdepth 3):\n \){ROOT_HEADERS}")
-endif()
+message(STATUS "Using lsplant.hpp from project root directory")
 
 target_link_libraries(bootloader_spoofer
     log
