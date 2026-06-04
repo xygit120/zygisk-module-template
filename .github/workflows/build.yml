@@ -22,31 +22,27 @@ jobs:
           ndk-version: r26d
           add-to-path: true
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3
+      - name: Install Python
+        run: sudo apt-get install -y python3
 
       - name: Build Release
         run: |
-          chmod +x build
-          ./build build -t release --ndk ${{ steps.setup-ndk.outputs.ndk-path }}
+          python3 build.py build -t release --ndk ${{ steps.setup-ndk.outputs.ndk-path }}
 
       - name: Prepare Magisk Module
         run: |
           mkdir -p MagiskModule/zygisk/arm64-v8a
           
-          # 复制编译好的 so 文件
+          # 尝试几种可能的 so 文件位置
           if [ -f "libs/arm64-v8a.so" ]; then
             cp libs/arm64-v8a.so MagiskModule/zygisk/arm64-v8a/arm64-v8a.so
           elif [ -f "build/libs/arm64-v8a.so" ]; then
             cp build/libs/arm64-v8a.so MagiskModule/zygisk/arm64-v8a/arm64-v8a.so
           else
-            echo "Warning: so file not found in expected locations"
-            find . -name "*.so" -type f | head -5
+            # 兜底查找
+            find . -name "*.so" -type f | head -3 | xargs -I {} cp {} MagiskModule/zygisk/arm64-v8a/arm64-v8a.so || true
           fi
           
-          # 复制必要文件
           cp module.prop MagiskModule/
           [ -f customize.sh ] && cp customize.sh MagiskModule/ || true
 
@@ -68,6 +64,4 @@ jobs:
         with:
           files: BootloaderSpoofer-Zygisk.zip
           tag_name: v${{ github.run_number }}
-          name: BootloaderSpoofer Zygisk Build ${{ github.run_number }}
-          draft: false
-          prerelease: false
+          name: BootloaderSpoofer Zygisk ${{ github.run_number }}
