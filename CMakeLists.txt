@@ -12,14 +12,15 @@ add_library(bootloader_spoofer SHARED
     jni/zygisk_main.cpp
 )
 
-# ==================== LSPlant 配置（已适配 workflow） ====================
-set(LSPLANT_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/lsplant/lsplant/src/main/jni/include)
+# ==================== LSPlant 正确头文件路径 ====================
+set(LSPLANT_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/external/lsplant/lsplant/src/main/jni)
 
-if(EXISTS ${LSPLANT_INCLUDE_DIR}/lsplant.hpp)
-    message(STATUS "Found LSPlant headers at: ${LSPLANT_INCLUDE_DIR}")
-    include_directories(${LSPLANT_INCLUDE_DIR})
+if(EXISTS ${LSPLANT_ROOT}/include/lsplant.hpp)
+    message(STATUS "Found LSPlant headers at: ${LSPLANT_ROOT}/include")
+    include_directories(${LSPLANT_ROOT}/include)
+    include_directories(${LSPLANT_ROOT})   # 有些模块文件可能需要
 else()
-    message(FATAL_ERROR "lsplant.hpp not found at ${LSPLANT_INCLUDE_DIR}. Workflow clone step may have issues.")
+    message(FATAL_ERROR "lsplant.hpp not found! Please check LSPlant structure.")
 endif()
 
 target_link_libraries(bootloader_spoofer
@@ -27,5 +28,5 @@ target_link_libraries(bootloader_spoofer
 )
 
 set_target_properties(bootloader_spoofer PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY \( {CMAKE_CURRENT_SOURCE_DIR}/zygisk/ \){ANDROID_ABI}
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/zygisk/${ANDROID_ABI}
 )
