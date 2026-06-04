@@ -21,14 +21,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build
 
-      # 2. 精细化子模块掌控（精准递归 dex_builder，无视 test 目录）
+      # 2. 精细化子模块掌控（CD 进入子目录，解除 Git 作用域限制）
       - name: Initialize Template Submodules Safely
         run: |
-          # 仅初始化模板自带的顶层子模块
+          # 让主 Git 初始化顶层子模块
           git submodule update --init native/external/dobby native/external/lsplant
           
-          # 递归拉取 dex_builder 及其内部套娃（如 parallel_hashmap），完美避开 test 404 死链
-          git submodule update --init --recursive native/external/lsplant/lsplant/src/main/jni/external/dex_builder
+          # CD 进 lsplant 目录，让它自己的 Git 递归拉取 dex_builder 和 parallel_hashmap，绕过测试死链
+          cd native/external/lsplant
+          git submodule update --init --recursive lsplant/src/main/jni/external/dex_builder
 
       # 3. 使用最稳妥的 NDK r26d 编译
       - name: Setup Android NDK r26d
