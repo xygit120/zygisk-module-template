@@ -1,0 +1,35 @@
+- name: Prepare Magisk Module
+        run: |
+          mkdir -p MagiskModule/zygisk/arm64-v8a
+
+          # ==================== 复制编译好的 .so ====================
+          # 从 CMake 的 build 目录复制（注意你的 CMake 输出路径）
+          SO_PATH="native/build/zygisk/arm64-v8a/libbootloader_spoofer.so"
+          
+          if [ -f "$SO_PATH" ]; then
+            cp "$SO_PATH" MagiskModule/zygisk/arm64-v8a/arm64-v8a.so
+            echo "Copied .so from: $SO_PATH"
+          else
+            echo "Error: .so file not found at $SO_PATH"
+            # 备用查找方式
+            find native/build -name "*.so" | head -5
+            exit 1
+          fi
+
+          # ==================== 复制 hooker.dex ====================
+          if [ -f "template/hooker.dex" ]; then
+            cp template/hooker.dex MagiskModule/hooker.dex
+            echo "Copied hooker.dex"
+          else
+            echo "Warning: template/hooker.dex not found"
+          fi
+
+          # ==================== 复制其他模块文件 ====================
+          cp module.prop MagiskModule/
+          [ -f customize.sh ] && cp customize.sh MagiskModule/ || true
+          [ -f post-fs-data.sh ] && cp post-fs-data.sh MagiskModule/ || true
+          [ -f service.sh ] && cp service.sh MagiskModule/ || true
+          [ -f sepolicy.rule ] && cp sepolicy.rule MagiskModule/ || true
+
+          echo "MagiskModule prepared successfully"
+          ls -la MagiskModule/
