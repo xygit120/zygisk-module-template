@@ -11,8 +11,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: true
           fetch-depth: 0
+
+      - name: Clone ShadowHook
+        run: |
+          git clone --depth 1 https://github.com/bytedance/android-inline-hook.git shadowhook
 
       - name: Setup Python
         uses: actions/setup-python@v5
