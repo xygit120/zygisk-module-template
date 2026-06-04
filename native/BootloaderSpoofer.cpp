@@ -16,7 +16,6 @@ static std::vector<std::string> targetList;
 
 static bool isTargetApp(const char* pkg) {
     if (targetList.empty()) {
-        // 读取 target.txt
         std::ifstream file("/data/adb/modules/ru.blays.bootloaderspoofer.shadowcpp/target.txt");
         if (file.is_open()) {
             std::string line;
@@ -28,7 +27,7 @@ static bool isTargetApp(const char* pkg) {
             }
             file.close();
         } else {
-            LOGI("target.txt not found, hooking ALL apps (test mode)");
+            LOGI("target.txt not found, hooking ALL apps");
             return true;
         }
     }
@@ -50,11 +49,11 @@ static bool patchAttestation(uint8_t* data, size_t len) {
             for (size_t j = i + 30; j < len - 8; ++j) {
                 if (data[j] == 0x01 && data[j+1] == 0x01 && data[j+2] == 0x00) {
                     data[j+2] = 0x01;
-                    LOGI("Patched deviceLocked -> true");
+                    LOGI("Patched deviceLocked");
                 }
                 if (data[j] == 0x0A && data[j+1] == 0x01 && data[j+2] == 0x01) {
                     data[j+2] = 0x00;
-                    LOGI("Patched verifiedBootState -> locked");
+                    LOGI("Patched verifiedBootState");
                 }
             }
             return true;
@@ -95,13 +94,13 @@ public:
     }
 
     void preAppSpecialize(AppSpecializeArgs *args) override {
-        if (args == nullptr || args->niceName == nullptr) return;
+        if (args == nullptr || args->nice_name == nullptr) return;
 
-        std::string pkg = args->niceName;
+        std::string pkg = args->nice_name;
         LOGI("App: %s", pkg.c_str());
 
         if (isTargetApp(pkg.c_str())) {
-            LOGI("【Target App】Enabling hooks: %s", pkg.c_str());
+            LOGI("Target App Detected: %s", pkg.c_str());
 
             shadowhook_init(SHADOWHOOK_MODE_UNIQUE, false);
 
