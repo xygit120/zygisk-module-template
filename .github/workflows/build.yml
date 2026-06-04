@@ -29,6 +29,9 @@ jobs:
           git clone https://github.com/LSPosed/LSPlant.git external/lsplant --depth 1
       # ============================================================
 
+      - name: Install Ninja (for C++ Modules support)
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
       - name: Setup Android NDK r26d
         uses: nttld/setup-ndk@v1
         id: setup-ndk
@@ -36,19 +39,20 @@ jobs:
           ndk-version: r26d
           add-to-path: true
 
-      - name: Configure and Build with CMake
+      - name: Configure and Build with CMake (Ninja + C++ Modules)
         run: |
           cd native
-          rm -rf build                    # 强制干净构建（很重要）
+          rm -rf build
           mkdir -p build
+
           cmake -B build \
+            -G Ninja \                                           # ← 关键：使用 Ninja 生成器
             -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-26 \
             -DCMAKE_BUILD_TYPE=Release
 
-          # 注意：下面这行改成了 -j1，方便看到完整错误
-          # 确认能正常构建后再改回 -j$(nproc)
+          # 使用 -j1 方便看完整错误，成功后再改回 -j$(nproc)
           cmake --build build --config Release -- -j1
 
       - name: Prepare Magisk Module
@@ -66,7 +70,7 @@ jobs:
             exit 1
           fi
 
-          # 复制 hooker.dex
+          # 复制 hooker.dex（如果有）
           if [ -f "template/hooker.dex" ]; then
             cp template/hooker.dex MagiskModule/hooker.dex
           fi
