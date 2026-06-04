@@ -15,21 +15,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ==================== 自动克隆依赖（含 SSH 路由修复） ====================
+      # ==================== 自动克隆依赖（精准按需拉取） ====================
       - name: Clone Dobby
         working-directory: native
         run: |
           rm -rf external/dobby
-          git clone https://github.com/LSPosed/Dobby.git external/dobby --recurse-submodules --depth 1
+          git clone https://github.com/LSPosed/Dobby.git external/dobby --depth 1
 
       - name: Clone LSPlant
         working-directory: native
         run: |
-          # 核心修复：强制将 SSH 形式的子模块链接重定向为 HTTPS，解决权限拒绝问题
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          
           rm -rf external/lsplant
-          git clone https://github.com/LSPosed/LSPlant.git external/lsplant --recurse-submodules --depth 1
+          # 1. 先只克隆 LSPlant 主仓库（不包含任何子模块）
+          git clone https://github.com/LSPosed/LSPlant.git external/lsplant --depth 1
+          
+          # 2. 进入目录，仅单独初始化核心编译器依赖 dex_builder，跳过报错的 test 测试库
+          cd external/lsplant
+          git submodule update --init --depth 1 lsplant/src/main/jni/external/dex_builder
       # ============================================================
 
       - name: Install Ninja (for C++ Modules support)
