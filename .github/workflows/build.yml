@@ -31,11 +31,21 @@ jobs:
           git submodule update --init --recursive --depth 1 lsplant/src/main/jni/external/dex_builder
       # ============================================================
 
-      # 关键修改 1：不仅安装 ninja，还要安装 clang-tools 以获取 host 的 clang-scan-deps
+      # 核心修复：安装环境并动态创建软链接，抹平 Ubuntu 版本的命名差异
       - name: Install Ninja & Clang Tools (for C++ Modules support)
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build clang-tools
+          sudo apt-get install -y ninja-build clang-tools clang
+          
+          # 动态寻找系统里带版本号的二进制文件（取最新版本），并软链接到 CMake 指定的通用路径
+          SCAN_DEPS_BIN=$(ls /usr/bin/clang-scan-deps-* 2>/dev/null | sort -V | tail -n 1)
+          if [ -n "$SCAN_DEPS_BIN" ]; then
+            echo "✓ 成功检测到依赖扫描器: $SCAN_DEPS_BIN"
+            sudo ln -sf "$SCAN_DEPS_BIN" /usr/bin/clang-scan-deps
+          else
+            echo "❌ Error: 未能在系统中检测到任何版本的 clang-scan-deps！"
+            exit 1
+          fi
 
       - name: Setup Android NDK r26d
         uses: nttld/setup-ndk@v1
@@ -50,7 +60,6 @@ jobs:
           rm -rf build
           mkdir -p build
           
-          # 关键修改 2：将 CMAKE_CXX_COMPILER_CLANG_SCAN_DEPS 指向系统刚安装好的路径
           cmake -B build \
             -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
