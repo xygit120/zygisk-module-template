@@ -1,8 +1,9 @@
 cmake_minimum_required(VERSION 3.28)
 project(BootloaderSpoofer LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 # 关键修改：关闭模块扫描（NDK Clang 目前不支持 CMake 的 C++ Modules 依赖扫描）
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
@@ -54,5 +55,5 @@ if(HAS_DOBBY)
 endif()
 
 set_target_properties(bootloader_spoofer PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY "\( {CMAKE_CURRENT_BINARY_DIR}/zygisk/ \){ANDROID_ABI}"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/zygisk/${ANDROID_ABI}"
 )

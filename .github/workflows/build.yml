@@ -1,29 +1,76 @@
+name: Build Zygisk Module
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a]
+
     steps:
-    - uses: actions/checkout@v3
-    
-    - name: Fix dex_builder CMakeLists.txt
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+        fetch-depth: 1
+
+    - name: Setup Android NDK
+      uses: nttld/setup-ndk@v1
+      id: setup-ndk
+      with:
+        ndk-version: r27c
+        add-to-path: true
+
+    - name: Fix dex_builder CMakeLists.txt (for C++17 compatibility with NDK)
       run: |
-        cd native/external/lsplant/lsplant/src/main/jni/external/dex_builder
-        # 备份原文件
-        cp CMakeLists.txt CMakeLists.txt.backup
-        
-        # 使用sed修改
-        sed -i '1s/^/set(CMAKE_CXX_SCAN_FOR_MODULES OFF)\n/' CMakeLists.txt
-        sed -i '/project(dex_builder)/a set(CMAKE_CXX_STANDARD 17)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\nset(CMAKE_CXX_EXTENSIONS OFF)' CMakeLists.txt
-        # 删除原来的add_definitions行
-        sed -i '/add_definitions(-std=c++20)/d' CMakeLists.txt
-        
-    - name: Configure and Build
+        DEX_BUILDER_DIR="native/external/lsplant/lsplant/src/main/jni/external/dex_builder"
+        if [ -f "$DEX_BUILDER_DIR/CMakeLists.txt" ]; then
+          cd "$DEX_BUILDER_DIR"
+          cp CMakeLists.txt CMakeLists.txt.backup || true
+          # Prepend module scan off
+          sed -i '1s/^/set(CMAKE_CXX_SCAN_FOR_MODULES OFF)\n/' CMakeLists.txt
+          # After project(dex_builder) add C++17 settings
+          sed -i '/project(dex_builder)/a set(CMAKE_CXX_STANDARD 17)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\nset(CMAKE_CXX_EXTENSIONS OFF)' CMakeLists.txt
+          # Remove any old C++20 definition
+          sed -i '/add_definitions(-std=c++20)/d' CMakeLists.txt
+          echo "dex_builder CMakeLists.txt patched for ABI ${{ matrix.abi }}"
+        else
+          echo "Warning: dex_builder CMakeLists.txt not found, skipping patch"
+        fi
+
+    - name: Configure and Build for ${{ matrix.abi }}
       run: |
         cd native
         mkdir -p build && cd build
         cmake .. \
+          -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=${{ matrix.abi }} \
+          -DANDROID_PLATFORM=android-24 \
           -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
           -DCMAKE_CXX_STANDARD=17 \
           -DCMAKE_CXX_STANDARD_REQUIRED=ON \
           -DCMAKE_CXX_EXTENSIONS=OFF \
-          -DCMAKE_BUILD_TYPE=Release
-        cmake --build . --verbose
+          -DCMAKE_BUILD_TYPE=Release \
+          -G "Unix Makefiles"
+        cmake --build . --verbose --parallel $(nproc)
+
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: zygisk-${{ matrix.abi }}
+        path: native/build/zygisk/${{ matrix.abi }}/
+        retention-days: 7
+
+    - name: Show output
+      run: |
+        echo "Build output for ${{ matrix.abi }}:"
+        ls -la native/build/zygisk/${{ matrix.abi }}/ || echo "No output dir found"
+        find native/build -name "*.so" | head -5 || true
