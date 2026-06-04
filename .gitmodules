@@ -1,3 +1,6 @@
 [submodule "shadowhook"]
 	path = shadowhook
 	url = https://github.com/bytedance/android-inline-hook.git
+[submodule "native/shadowhook"]
+	path = native/shadowhook
+	url = https://github.com/bytedance/android-inline-hook.git
