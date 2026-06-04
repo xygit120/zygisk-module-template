@@ -1,100 +1,35 @@
-name: Build Zygisk Module
+name: Android Build
 
 on:
   push:
-    branches: [main, master]
-  pull_request:
-    branches: [main, master]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        abi: [arm64-v8a, armeabi-v7a]
 
     steps:
-      - name: Checkout with submodules
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
         with:
-          submodules: recursive
-          fetch-depth: 1
+          java-version: '17'
+          distribution: 'temurin'
 
-      - name: Setup Android NDK r27c
-        uses: nttld/setup-ndk@v1
-        id: setup-ndk
-        with:
-          ndk-version: r27c
-          add-to-path: true
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
-      - name: Patch dex_builder (fix C++20 modules issue)
+      - name: Build with Gradle
         run: |
-          DEX_DIR="native/external/lsplant/lsplant/src/main/jni/external/dex_builder"
-          if [ -f "$DEX_DIR/CMakeLists.txt" ]; then
-            echo "Patching dex_builder CMakeLists.txt..."
-            cp "$DEX_DIR/CMakeLists.txt" "$DEX_DIR/CMakeLists.txt.backup"
-            
-            # 在文件最前面禁用模块扫描
-            sed -i '1i set(CMAKE_CXX_SCAN_FOR_MODULES OFF)' "$DEX_DIR/CMakeLists.txt"
-            
-            # 在 project(dex_builder) 后强制 C++17
-            sed -i '/project(dex_builder)/a set(CMAKE_CXX_STANDARD 17)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\nset(CMAKE_CXX_EXTENSIONS OFF)' "$DEX_DIR/CMakeLists.txt"
-            
-            # 删除可能存在的 C++20 定义
-            sed -i '/add_definitions(-std=c++20)/d' "$DEX_DIR/CMakeLists.txt"
-            
-            echo "dex_builder patched successfully"
-          else
-            echo "WARNING: dex_builder CMakeLists.txt not found"
-          fi
+          chmod +x gradlew
+          ./gradlew clean assembleDebug --stacktrace
 
-      - name: Configure (CMake)
-        run: |
-          cd native
-          rm -rf build && mkdir build && cd build
-          
-          cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=${{ matrix.abi }} \
-            -DANDROID_PLATFORM=android-24 \
-            -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
-            -DCMAKE_CXX_STANDARD=17 \
-            -DCMAKE_CXX_STANDARD_REQUIRED=ON \
-            -DCMAKE_CXX_EXTENSIONS=OFF \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_VERBOSE_MAKEFILE=ON \
-            2>&1 | tee cmake_configure.log
-
-      - name: Build
-        run: |
-          cd native/build
-          echo "=== Building for ${{ matrix.abi }} ==="
-          
-          if cmake --build . --parallel $(nproc) 2>&1 | tee build.log; then
-            echo "✅ Build succeeded for ${{ matrix.abi }}"
-          else
-            echo "❌ Build failed, showing last errors:"
-            tail -100 build.log
-            exit 1
-          fi
-
-      - name: Upload logs (always)
-        if: always()
+      # 新增：上传 APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: logs-${{ matrix.abi }}
-          path: |
-            native/build/cmake_configure.log
-            native/build/build.log
-            native/external/lsplant/lsplant/src/main/jni/external/dex_builder/CMakeLists.txt.backup
-          retention-days: 14
-
-      - name: Upload compiled module
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: zygisk-${{ matrix.abi }}
-          path: native/build/zygisk/${{ matrix.abi }}/
+          name: ForgeMint-APK
+          path: app/build/outputs/apk/debug/*.apk
           retention-days: 30

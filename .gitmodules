@@ -1,6 +1,0 @@
-[submodule "native/external/dobby"]
-	path = native/external/dobby
-	url = https://github.com/jmpews/Dobby.git
-[submodule "native/external/lsplant"]
-	path = native/external/lsplant
-	url = https://github.com/LSPosed/LSPlant.git
