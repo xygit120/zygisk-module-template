@@ -21,6 +21,9 @@ jobs:
           python-version: '3.11'
 
       - name: Build module
+        env:
+          # 显式指定使用 GitHub 镜像自带的稳定版 NDK r26 路径
+          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/26.3.11579264
         run: python3 build.py zip
 
       - name: Upload module zip
